@@ -60,17 +60,10 @@ throw new Error("Google Docs and Drive clients could not be initialized.");
 return { authClient, googleDocs, googleDrive };
 }
 
-// Set up process-level unhandled error/rejection handlers to prevent crashes
-process.on('uncaughtException', (error) => {
-  console.error('Uncaught Exception:', error);
-  // Don't exit process, just log the error and continue
-  // This will catch timeout errors that might otherwise crash the server
-});
-
-process.on('unhandledRejection', (reason, promise) => {
-  console.error('Unhandled Promise Rejection:', reason);
-  // Don't exit process, just log the error and continue
-});
+// SECURITY NOTE: Previously had global error handlers here that suppressed all exceptions.
+// This was dangerous as it could mask security violations and attacks.
+// Error handlers removed for fail-fast security model. Individual tool error handlers
+// provide appropriate error handling without suppressing critical failures.
 
 const server = new FastMCP({
   name: 'Ultimate Google Docs MCP Server',
@@ -96,6 +89,15 @@ return drive;
 }
 
 // === HELPER FUNCTIONS ===
+
+/**
+ * Safely escapes user input for use in Google Drive API query strings
+ * Prevents query injection attacks by escaping special characters
+ */
+function escapeDriveQuery(input: string): string {
+    // Escape backslashes first, then single quotes
+    return input.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+}
 
 /**
  * Converts Google Docs JSON structure to Markdown format
@@ -1213,7 +1215,8 @@ try {
   // Build the query string for Google Drive API
   let queryString = "mimeType='application/vnd.google-apps.document' and trashed=false";
   if (args.query) {
-    queryString += ` and (name contains '${args.query}' or fullText contains '${args.query}')`;
+    const escapedQuery = escapeDriveQuery(args.query);
+    queryString += ` and (name contains '${escapedQuery}' or fullText contains '${escapedQuery}')`;
   }
 
   const response = await drive.files.list({
@@ -1265,18 +1268,20 @@ log.info(`Searching Google Docs for: "${args.searchQuery}" in ${args.searchIn}`)
 try {
   let queryString = "mimeType='application/vnd.google-apps.document' and trashed=false";
 
-  // Add search criteria
+  // Add search criteria with proper escaping
+  const escapedQuery = escapeDriveQuery(args.searchQuery);
   if (args.searchIn === 'name') {
-    queryString += ` and name contains '${args.searchQuery}'`;
+    queryString += ` and name contains '${escapedQuery}'`;
   } else if (args.searchIn === 'content') {
-    queryString += ` and fullText contains '${args.searchQuery}'`;
+    queryString += ` and fullText contains '${escapedQuery}'`;
   } else {
-    queryString += ` and (name contains '${args.searchQuery}' or fullText contains '${args.searchQuery}')`;
+    queryString += ` and (name contains '${escapedQuery}' or fullText contains '${escapedQuery}')`;
   }
 
-  // Add date filter if provided
+  // Add date filter if provided (dates are validated by Zod, but escape anyway for safety)
   if (args.modifiedAfter) {
-    queryString += ` and modifiedTime > '${args.modifiedAfter}'`;
+    const escapedDate = escapeDriveQuery(args.modifiedAfter);
+    queryString += ` and modifiedTime > '${escapedDate}'`;
   }
 
   const response = await drive.files.list({
@@ -1929,9 +1934,6 @@ console.error("Starting Ultimate Google Docs MCP server...");
       // Start the server with proper error handling
       server.start(configToUse);
       console.error(`MCP Server running using ${configToUse.transportType}. Awaiting client connection...`);
-
-      // Log that error handling has been enabled
-      console.error('Process-level error handling configured to prevent crashes from timeout errors.');
 
 } catch(startError: any) {
 console.error("FATAL: Server failed to start:", startError.message || startError);

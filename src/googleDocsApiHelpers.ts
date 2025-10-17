@@ -490,11 +490,38 @@ export async function insertInlineImage(
     width?: number,
     height?: number
 ): Promise<docs_v1.Schema$BatchUpdateDocumentResponse> {
-    // Validate URL format
+    // Validate URL format and protocol (SECURITY: Prevent SSRF attacks)
+    let parsedUrl: URL;
     try {
-        new URL(imageUrl);
+        parsedUrl = new URL(imageUrl);
     } catch (e) {
         throw new UserError(`Invalid image URL format: ${imageUrl}`);
+    }
+
+    // Only allow HTTP and HTTPS protocols to prevent SSRF attacks
+    if (parsedUrl.protocol !== 'http:' && parsedUrl.protocol !== 'https:') {
+        throw new UserError(`Only HTTP and HTTPS URLs are allowed for image insertion. Protocol "${parsedUrl.protocol}" is not supported.`);
+    }
+
+    // Block private/internal IP ranges to prevent SSRF
+    const hostname = parsedUrl.hostname;
+    const privateRanges = [
+        /^localhost$/i,
+        /^127\.\d+\.\d+\.\d+$/,  // 127.0.0.0/8
+        /^10\.\d+\.\d+\.\d+$/,    // 10.0.0.0/8
+        /^172\.(1[6-9]|2\d|3[01])\.\d+\.\d+$/,  // 172.16.0.0/12
+        /^192\.168\.\d+\.\d+$/,   // 192.168.0.0/16
+        /^169\.254\.\d+\.\d+$/,   // 169.254.0.0/16 (link-local)
+        /^0\.0\.0\.0$/,
+        /^\[::1\]$/,              // IPv6 localhost
+        /^\[fe80:/i,              // IPv6 link-local
+        /^\[fc00:/i,              // IPv6 private
+    ];
+
+    for (const pattern of privateRanges) {
+        if (pattern.test(hostname)) {
+            throw new UserError(`Access to private/internal IP addresses is not allowed for security reasons. Hostname: ${hostname}`);
+        }
     }
 
     // Build the insertInlineImage request
@@ -529,13 +556,28 @@ export async function uploadImageToDrive(
     const fs = await import('fs');
     const path = await import('path');
 
-    // Verify file exists
-    if (!fs.existsSync(localFilePath)) {
+    // SECURITY: Prevent path traversal attacks
+    // Resolve the path to get the absolute path and normalize it
+    const resolvedPath = path.resolve(localFilePath);
+
+    // Verify the path doesn't contain path traversal patterns
+    if (localFilePath.includes('..') || localFilePath.includes('~')) {
+        throw new UserError(`Path traversal detected. Path must not contain '..' or '~' components.`);
+    }
+
+    // Verify file exists at the resolved path
+    if (!fs.existsSync(resolvedPath)) {
         throw new UserError(`Image file not found: ${localFilePath}`);
     }
 
-    // Get file name and mime type
-    const fileName = path.basename(localFilePath);
+    // Verify it's a file, not a directory or special file
+    const stats = fs.statSync(resolvedPath);
+    if (!stats.isFile()) {
+        throw new UserError(`Path must point to a regular file, not a directory or special file.`);
+    }
+
+    // Get file name and mime type (use resolved path for actual file operations)
+    const fileName = path.basename(resolvedPath);
     const mimeTypeMap: { [key: string]: string } = {
         '.jpg': 'image/jpeg',
         '.jpeg': 'image/jpeg',
@@ -546,8 +588,13 @@ export async function uploadImageToDrive(
         '.svg': 'image/svg+xml'
     };
 
-    const ext = path.extname(localFilePath).toLowerCase();
-    const mimeType = mimeTypeMap[ext] || 'application/octet-stream';
+    const ext = path.extname(resolvedPath).toLowerCase();
+    const mimeType = mimeTypeMap[ext];
+
+    // Only allow supported image formats
+    if (!mimeType) {
+        throw new UserError(`Unsupported file type: ${ext}. Supported formats: .jpg, .jpeg, .png, .gif, .bmp, .webp, .svg`);
+    }
 
     // Upload file to Drive
     const fileMetadata: any = {
@@ -561,7 +608,7 @@ export async function uploadImageToDrive(
 
     const media = {
         mimeType: mimeType,
-        body: fs.createReadStream(localFilePath)
+        body: fs.createReadStream(resolvedPath)  // Use resolved path
     };
 
     const uploadResponse = await drive.files.create({
