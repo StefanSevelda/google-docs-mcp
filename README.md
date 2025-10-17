@@ -19,6 +19,44 @@ A comprehensive MCP server providing 30+ tools for reading, writing, formatting 
 
 ---
 
+## Architecture
+
+```mermaid
+C4Context
+    title System Context Diagram - Google Docs MCP Server
+
+    Person(user, "User", "Developer or AI using Claude Desktop/Code")
+
+    System_Boundary(local, "Local Machine") {
+        System(mcp_client, "MCP Client", "Claude Desktop, Claude Code, or other MCP-compatible client<br/>[Runs locally]")
+        System(mcp_server, "Google Docs MCP Server", "FastMCP server providing 30+ tools<br/>[Runs locally via Node.js]")
+
+        Rel(mcp_client, mcp_server, "Tool invocations", "stdio/JSON-RPC")
+    }
+
+    System_Ext(google_docs, "Google Docs API", "Document operations<br/>[Cloud service]")
+    System_Ext(google_drive, "Google Drive API", "File management<br/>[Cloud service]")
+    System_Ext(oauth, "Google OAuth 2.0", "Authentication<br/>[Cloud service]")
+
+    Rel(user, mcp_client, "Sends commands", "Natural Language")
+    Rel(mcp_server, google_docs, "REST API calls", "HTTPS")
+    Rel(mcp_server, google_drive, "REST API calls", "HTTPS")
+    Rel(mcp_server, oauth, "Auth flow", "OAuth 2.0")
+
+    UpdateLayoutConfig($c4ShapeInRow="3", $c4BoundaryInRow="1")
+```
+
+**Key Components:**
+- **Local Machine**: Both MCP client and server run locally on your computer
+  - **MCP Client**: Claude Desktop or Code (local application)
+  - **MCP Server**: TypeScript/Node.js server (runs via stdio transport)
+- **Cloud Services**: Google APIs accessed over HTTPS
+  - **Google Docs API**: Document content operations
+  - **Google Drive API**: File and folder management
+- **Security**: OAuth 2.0 authentication, query injection/SSRF/path traversal protection
+
+---
+
 ## Prerequisites
 
 - **Node.js 18+** and npm ([download](https://nodejs.org/))
@@ -50,7 +88,7 @@ Create OAuth credentials to access Google APIs:
 
 ```bash
 # Clone repository
-git clone https://github.com/a-bonus/google-docs-mcp.git mcp-googledocs-server
+git clone https://github.com/StefanSevelda/google-docs-mcp.git mcp-googledocs-server
 cd mcp-googledocs-server
 
 # Place credentials.json in this folder
