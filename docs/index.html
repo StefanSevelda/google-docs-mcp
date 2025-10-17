@@ -20,14 +20,21 @@
 
 Connect Claude Desktop (or other MCP clients) to your Google Docs!
 
-This server uses the Model Context Protocol (MCP) and the `fastmcp` library to provide tools for reading and appending text to Google Documents. It acts as a bridge, allowing AI assistants like Claude to interact with your documents programmatically.
+This comprehensive MCP server provides **30+ tools** for reading, editing, formatting, and managing Google Documents and Drive files. It acts as a powerful bridge, allowing AI assistants like Claude to interact with your documents programmatically.
 
 **Features:**
 
-- **Read Documents:** Provides a `readGoogleDoc` tool to fetch the text content of a specified Google Doc.
-- **Append to Documents:** Provides an `appendToGoogleDoc` tool to add text to the end of a specified Google Doc.
-- **Google Authentication:** Handles the OAuth 2.0 flow to securely authorize access to your Google Account.
-- **MCP Compliant:** Designed for use with MCP clients like Claude Desktop.
+- **📖 Document Access:** Read documents in text, JSON, or Markdown format
+- **✏️ Content Editing:** Insert, append, delete, and replace text with precision
+- **🎨 Rich Formatting:** Apply text styles (bold, italic, colors, fonts) and paragraph styles (headings, alignment, spacing)
+- **📊 Document Structure:** Create and edit tables, insert images, add page breaks
+- **💬 Comment Management:** List, read, add, reply to, and resolve comments
+- **📁 Drive Integration:** Search, list, create, move, copy, rename, and delete files and folders
+- **🔒 Security Hardened:** Query injection prevention, SSRF protection, path traversal safeguards
+- **🤖 Claude Code Agents:** Includes 6 specialized agents for development assistance
+- **🔧 Template Support:** Create documents from templates with variable replacement
+- **🔍 Smart Search:** Find text with instance matching, search across Drive
+- **🗂️ Folder Management:** Complete folder hierarchy navigation and organization
 
 ---
 
@@ -89,7 +96,7 @@ This server needs permission to talk to Google APIs on your behalf. You'll creat
 
 1.  **Clone the Repository:** Open your terminal/command prompt and run:
     ```bash
-    git clone https://github.com/a-bonus/google-docs-mcp.git mcp-googledocs-server
+    git clone https://github.com/StefanSevelda/google-docs-mcp.git mcp-googledocs-server
     ```
 2.  **Navigate into Directory:**
     ```bash
@@ -218,6 +225,344 @@ Claude will automatically launch your server in the background when needed using
   - Ensure you enabled the correct APIs (Docs, Drive).
   - Make sure you added your email as a Test User on the OAuth Consent Screen.
   - Verify the `credentials.json` file is correctly placed in the project root.
+
+---
+
+## Available Tools
+
+This server provides **30+ MCP tools** organized into the following categories:
+
+### 📖 Document Access & Reading (4 tools)
+
+**`readGoogleDoc`** - Read document content in multiple formats
+- `format`: Choose 'text', 'json', or 'markdown' output
+- `maxLength`: Optional character limit for text output
+- Supports full document structure analysis in JSON format
+- Experimental markdown conversion with formatting preservation
+
+**`appendToGoogleDoc`** - Append text to the end of a document
+- `addNewlineIfNeeded`: Automatically adds newline before content
+- Smart positioning at document end
+
+**`insertText`** - Insert text at a specific index
+- Precise 1-based index positioning
+- Use for targeted content insertion
+
+**`deleteRange`** - Delete content within a specified range
+- Start index (inclusive) and end index (exclusive)
+- Validates range boundaries
+
+### 🎨 Formatting & Styling (3 tools)
+
+**`applyTextStyle`** - Apply character-level formatting
+- Target by exact range OR by finding specific text
+- `matchInstance`: Find 1st, 2nd, 3rd, etc. occurrence
+- Styles: bold, italic, underline, strikethrough
+- Colors: foregroundColor, backgroundColor (hex format)
+- Font: fontSize (points), fontFamily
+- Links: linkUrl (convert text to hyperlink)
+
+**`applyParagraphStyle`** - Apply paragraph-level formatting
+- Target by range, by finding text, or by index within paragraph
+- Alignment: LEFT, CENTER, RIGHT, JUSTIFIED
+- Spacing: spaceAbove, spaceBelow, indentStart, indentEnd
+- Named styles: HEADING_1 through HEADING_6, TITLE, SUBTITLE, NORMAL_TEXT
+- `keepWithNext`: Prevent page breaks between paragraphs
+
+**`formatMatchingText`** - Legacy tool for text formatting
+- Simplified interface for common formatting tasks
+- Finds and formats text in one operation
+
+### 📊 Document Structure (5 tools)
+
+**`insertTable`** - Create tables with specified dimensions
+- `rows`: Number of table rows
+- `columns`: Number of table columns
+- `index`: Insertion point in document
+
+**`editTableCell`** - Modify table cell content and styling
+- `tableStartIndex`: Table element start position
+- `rowIndex`, `columnIndex`: Cell coordinates (0-based)
+- `textContent`: Replace cell text
+- Apply text and paragraph styles to cells
+
+**`insertPageBreak`** - Insert page breaks
+- `index`: Position for page break
+
+**`insertImageFromUrl`** - Insert images from public URLs
+- `imageUrl`: Must be publicly accessible HTTP/HTTPS URL
+- `width`, `height`: Optional dimensions in points
+- SSRF protection: Blocks private IP addresses
+
+**`insertLocalImage`** - Upload and insert local images
+- `localImagePath`: Absolute path to image file
+- Supports: .jpg, .jpeg, .png, .gif, .bmp, .webp, .svg
+- `uploadToSameFolder`: Place in same folder as document (default: true)
+- Path traversal protection
+- File validation for security
+
+### 💬 Comment Management (6 tools)
+
+**`listComments`** - List all comments in a document
+- Returns comment IDs, authors, content, and status
+- Includes quoted text context
+
+**`getComment`** - Get specific comment with full thread
+- `commentId`: Comment identifier
+- Returns all replies in thread
+
+**`addComment`** - Add comment anchored to text range
+- `startIndex`, `endIndex`: Text range for comment
+- `commentText`: Comment content
+
+**`replyToComment`** - Reply to existing comment
+- `commentId`: Parent comment
+- `replyText`: Reply content
+
+**`resolveComment`** - Mark comment as resolved
+- `commentId`: Comment to resolve
+
+**`deleteComment`** - Delete comment from document
+- `commentId`: Comment to remove
+- Requires appropriate permissions
+
+### 📁 Drive Integration - Discovery (4 tools)
+
+**`listGoogleDocs`** - List documents with filtering
+- `query`: Search query string (Drive API syntax)
+- `orderBy`: Sort by name, modifiedTime, or createdTime
+- `maxResults`: Limit results (1-100)
+- Query injection prevention
+
+**`searchGoogleDocs`** - Search documents by name or content
+- `searchQuery`: Search term
+- `searchIn`: Search in 'name', 'content', or 'both'
+- `modifiedAfter`: Filter by modification date (ISO 8601)
+- `maxResults`: Limit results
+
+**`getRecentGoogleDocs`** - Get recently modified documents
+- `daysBack`: How many days to look back (1-365)
+- `maxResults`: Limit results
+
+**`getDocumentInfo`** - Get detailed document metadata
+- Returns title, created/modified times, permissions, size
+
+### 📁 Drive Integration - Folders (3 tools)
+
+**`createFolder`** - Create new folder
+- `name`: Folder name
+- `parentFolderId`: Optional parent folder (default: Drive root)
+
+**`listFolderContents`** - List folder contents
+- `folderId`: Folder to list (use "root" for Drive root)
+- `includeFiles`, `includeSubfolders`: Filter content types
+- `maxResults`: Limit results
+
+**`getFolderInfo`** - Get folder metadata
+- Returns name, path, created/modified times, permissions
+
+### 📁 Drive Integration - File Operations (5 tools)
+
+**`moveFile`** - Move file or folder to different location
+- `fileId`: File/folder to move
+- `newParentId`: Destination folder (use "root" for Drive root)
+- `removeFromAllParents`: Remove from all current parents
+
+**`copyFile`** - Create copy of file
+- `fileId`: File to copy
+- `newName`: Optional name for copy
+- `parentFolderId`: Optional destination
+
+**`renameFile`** - Rename file or folder
+- `fileId`: File/folder to rename
+- `newName`: New name
+
+**`deleteFile`** - Delete file or folder
+- `fileId`: File/folder to delete
+- `skipTrash`: true for permanent deletion, false to move to trash
+
+**`createDocument`** - Create new Google Document
+- `title`: Document title
+- `initialContent`: Optional starting text
+- `parentFolderId`: Optional folder location
+
+**`createFromTemplate`** - Create document from template
+- `templateId`: Template document ID
+- `newTitle`: New document title
+- `replacements`: Object with {{variable}} replacements
+- `parentFolderId`: Optional folder location
+
+### 🔧 Experimental Tools (2 tools)
+
+**`fixListFormatting`** - Detect and convert text lists to proper formatting
+- Finds lines starting with -, *, 1., etc.
+- Converts to proper Google Docs lists
+- Experimental: May require manual review
+- `range`: Optional range to limit scope
+
+**`findElement`** - Find document elements by criteria
+- Not fully implemented
+- Placeholder for future element searching
+
+---
+
+## Tool Usage Examples
+
+### Reading a Document
+
+```javascript
+// Get document as plain text
+await readGoogleDoc({
+  documentId: "YOUR_DOC_ID",
+  format: "text"
+});
+
+// Get document as Markdown
+await readGoogleDoc({
+  documentId: "YOUR_DOC_ID",
+  format: "markdown"
+});
+```
+
+### Formatting Text
+
+```javascript
+// Make all instances of "Important" bold and red
+await applyTextStyle({
+  documentId: "YOUR_DOC_ID",
+  target: {
+    textToFind: "Important",
+    matchInstance: 1  // First occurrence
+  },
+  style: {
+    bold: true,
+    foregroundColor: "#FF0000"
+  }
+});
+
+// Apply Heading 1 style to paragraph containing text
+await applyParagraphStyle({
+  documentId: "YOUR_DOC_ID",
+  target: {
+    textToFind: "Chapter 1",
+    applyToContainingParagraph: true
+  },
+  style: {
+    namedStyleType: "HEADING_1"
+  }
+});
+```
+
+### Working with Images
+
+```javascript
+// Insert image from URL
+await insertImageFromUrl({
+  documentId: "YOUR_DOC_ID",
+  imageUrl: "https://example.com/image.jpg",
+  index: 1,
+  width: 400,
+  height: 300
+});
+
+// Upload local image
+await insertLocalImage({
+  documentId: "YOUR_DOC_ID",
+  localImagePath: "/path/to/image.png",
+  index: 1,
+  uploadToSameFolder: true
+});
+```
+
+### Managing Comments
+
+```javascript
+// Add comment to text range
+await addComment({
+  documentId: "YOUR_DOC_ID",
+  startIndex: 100,
+  endIndex: 150,
+  commentText: "Please review this section"
+});
+
+// Reply to comment
+await replyToComment({
+  documentId: "YOUR_DOC_ID",
+  commentId: "COMMENT_ID",
+  replyText: "Done!"
+});
+```
+
+### Drive Operations
+
+```javascript
+// Search for documents
+await searchGoogleDocs({
+  searchQuery: "project report",
+  searchIn: "both",
+  modifiedAfter: "2024-01-01",
+  maxResults: 10
+});
+
+// Create document from template
+await createFromTemplate({
+  templateId: "TEMPLATE_DOC_ID",
+  newTitle: "Q1 Report",
+  replacements: {
+    "{{NAME}}": "John Doe",
+    "{{DATE}}": "2024-01-15",
+    "{{QUARTER}}": "Q1"
+  }
+});
+```
+
+---
+
+## Security Features
+
+This server includes comprehensive security hardening:
+
+### Query Injection Prevention
+- All Drive API queries are sanitized using `escapeDriveQuery()`
+- Escapes single quotes and backslashes
+- Prevents malicious query injection attacks
+
+### SSRF Protection
+- URL validation in `insertImageFromUrl`
+- Only HTTP/HTTPS protocols allowed
+- Blocks access to private IP ranges:
+  - localhost (127.0.0.0/8)
+  - Private networks (10.0.0.0/8, 192.168.0.0/16, 172.16.0.0/12)
+  - Link-local addresses (169.254.0.0/16)
+- Prevents internal network scanning
+
+### Path Traversal Prevention
+- File path validation in `uploadImageToDrive`
+- Blocks paths containing '..' or '~'
+- Uses path.resolve() for normalization
+- Verifies files are regular files (not directories/special files)
+- Validates supported image formats only
+
+### Error Handling
+- Fail-fast security model
+- No dangerous global exception handlers
+- Proper error propagation and logging
+- User-friendly error messages without exposing internals
+
+---
+
+## Claude Code Agents
+
+This project includes 6 specialized AI agents for development assistance:
+
+1. **google-docs-api-engineer** - Expert for Google Docs/Drive API work
+2. **google-sheets-api-expert** - Specialist for Google Sheets integration
+3. **google-chat-api-engineer** - Expert for Google Chat bot development
+4. **architecture-documenter** - Creates C4 diagrams, sequence diagrams, and ADRs
+5. **security-auditor** - Analyzes code for vulnerabilities and security issues
+6. **senior-engineer** - Reviews code quality and suggests refactoring improvements
+
+Agents are located in `.claude/agents/` and can be invoked through Claude Code.
 
 ---
 
