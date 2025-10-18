@@ -22,7 +22,9 @@ const CREDENTIALS_PATH = path.join(projectRootDir, 'credentials.json');
 // - 'https://www.googleapis.com/auth/drive.readonly' for read-only Drive access
 const SCOPES = [
   'https://www.googleapis.com/auth/documents',
-  'https://www.googleapis.com/auth/drive' // Full Drive access for listing, searching, and document discovery
+  'https://www.googleapis.com/auth/drive', // Full Drive access for listing, searching, and document discovery
+  'https://www.googleapis.com/auth/chat.spaces.readonly', // Read Google Chat spaces
+  'https://www.googleapis.com/auth/chat.messages.readonly' // Read Google Chat messages
 ];
 
 async function loadSavedCredentialsIfExist(): Promise<OAuth2Client | null> {
