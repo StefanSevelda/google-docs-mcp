@@ -127,6 +127,30 @@ styleArgs => Object.values(styleArgs).some(v => v !== undefined),
 });
 export type ApplyParagraphStyleToolArgs = z.infer<typeof ApplyParagraphStyleToolParameters>;
 
+// --- Google Chat Parameter Schemas ---
+
+export const SpaceNameParameter = z.object({
+  spaceName: z.string().describe('The resource name of the Google Chat space (e.g., "spaces/SPACE_ID").'),
+});
+
+export const ListSpacesParameters = z.object({
+  pageSize: z.number().int().min(1).max(100).optional().default(50).describe('Maximum number of spaces to return (1-100).'),
+  pageToken: z.string().optional().describe('Token for pagination. Use the nextPageToken from a previous response to get the next page.'),
+  filter: z.string().optional().describe('Optional filter string (e.g., "spaceType = SPACE" or "spaceType = DIRECT_MESSAGE").'),
+});
+
+export const ListMessagesParameters = z.object({
+  spaceName: z.string().describe('The resource name of the space (e.g., "spaces/SPACE_ID").'),
+  pageSize: z.number().int().min(1).max(100).optional().default(25).describe('Maximum number of messages to return (1-100).'),
+  pageToken: z.string().optional().describe('Token for pagination. Use the nextPageToken from a previous response.'),
+  orderBy: z.string().optional().describe('Ordering of messages. Example: "createTime desc" or "createTime asc".'),
+  filter: z.string().optional().describe('Optional filter string for messages.'),
+});
+
+export const MessageNameParameter = z.object({
+  messageName: z.string().describe('The resource name of the message (e.g., "spaces/SPACE_ID/messages/MESSAGE_ID").'),
+});
+
 // --- Error Class ---
 // Use FastMCP's UserError for client-facing issues
 // Define a custom error for internal issues if needed
