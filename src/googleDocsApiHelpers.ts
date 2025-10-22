@@ -2,7 +2,7 @@
 import { google, docs_v1 } from 'googleapis';
 import { OAuth2Client } from 'google-auth-library';
 import { UserError } from 'fastmcp';
-import { TextStyleArgs, ParagraphStyleArgs, hexToRgbColor, NotImplementedError } from './types.js';
+import { TextStyleArgs, ParagraphStyleArgs, TableCellStyleArgs, hexToRgbColor, NotImplementedError } from './types.js';
 
 type Docs = docs_v1.Docs; // Alias for convenience
 
@@ -404,6 +404,425 @@ text: text,
 }
 };
 return executeBatchUpdate(docs, documentId, [request]);
+}
+
+// === TABLE HELPER FUNCTIONS ===
+
+/**
+ * Finds all tables in a document and returns their metadata
+ */
+export async function findTables(docs: Docs, documentId: string): Promise<Array<{
+  startIndex: number;
+  endIndex: number;
+  rows: number;
+  columns: number;
+}>> {
+  try {
+    const res = await docs.documents.get({
+      documentId,
+      fields: 'body(content(startIndex,endIndex,table(rows,columns,tableRows)))',
+    });
+
+    if (!res.data.body?.content) {
+      return [];
+    }
+
+    const tables: Array<{
+      startIndex: number;
+      endIndex: number;
+      rows: number;
+      columns: number;
+    }> = [];
+
+    res.data.body.content.forEach(element => {
+      if (element.table && element.startIndex !== undefined && element.endIndex !== undefined) {
+        const tableRows = element.table.tableRows || [];
+        const rows = tableRows.length;
+        const columns = tableRows[0]?.tableCells?.length || 0;
+
+        tables.push({
+          startIndex: element.startIndex!,
+          endIndex: element.endIndex!,
+          rows,
+          columns,
+        });
+      }
+    });
+
+    return tables;
+  } catch (error: any) {
+    console.error(`Error finding tables in doc ${documentId}: ${error.message || error}`);
+    throw error;
+  }
+}
+
+/**
+ * Gets detailed table structure including cell content
+ */
+export async function getTableStructure(docs: Docs, documentId: string, tableStartIndex: number): Promise<{
+  startIndex: number;
+  endIndex: number;
+  rows: number;
+  columns: number;
+  cells: Array<Array<{
+    content: string;
+    startIndex: number;
+    endIndex: number;
+  }>>;
+} | null> {
+  try {
+    const res = await docs.documents.get({
+      documentId,
+      fields: 'body(content(startIndex,endIndex,table(tableRows(startIndex,endIndex,tableCells(startIndex,endIndex,content(paragraph(elements(textRun(content)))))))))',
+    });
+
+    if (!res.data.body?.content) {
+      return null;
+    }
+
+    // Find the table at the specified index
+    for (const element of res.data.body.content) {
+      if (element.table && element.startIndex === tableStartIndex) {
+        const tableRows = element.table.tableRows || [];
+        const rows = tableRows.length;
+        const columns = tableRows[0]?.tableCells?.length || 0;
+
+        const cells: Array<Array<{
+          content: string;
+          startIndex: number;
+          endIndex: number;
+        }>> = [];
+
+        tableRows.forEach(row => {
+          const rowCells: Array<{
+            content: string;
+            startIndex: number;
+            endIndex: number;
+          }> = [];
+
+          (row.tableCells || []).forEach(cell => {
+            let cellText = '';
+            (cell.content || []).forEach(content => {
+              if (content.paragraph?.elements) {
+                content.paragraph.elements.forEach(elem => {
+                  if (elem.textRun?.content) {
+                    cellText += elem.textRun.content;
+                  }
+                });
+              }
+            });
+
+            rowCells.push({
+              content: cellText.trim(),
+              startIndex: cell.startIndex || 0,
+              endIndex: cell.endIndex || 0,
+            });
+          });
+
+          cells.push(rowCells);
+        });
+
+        return {
+          startIndex: element.startIndex!,
+          endIndex: element.endIndex!,
+          rows,
+          columns,
+          cells,
+        };
+      }
+    }
+
+    return null;
+  } catch (error: any) {
+    console.error(`Error getting table structure at index ${tableStartIndex}: ${error.message || error}`);
+    throw error;
+  }
+}
+
+/**
+ * Finds the content range of a specific table cell
+ */
+export async function getTableCellRange(
+  docs: Docs,
+  documentId: string,
+  tableStartIndex: number,
+  rowIndex: number,
+  columnIndex: number
+): Promise<{ startIndex: number; endIndex: number } | null> {
+  try {
+    const res = await docs.documents.get({
+      documentId,
+      fields: 'body(content(startIndex,table(tableRows(tableCells(startIndex,endIndex)))))',
+    });
+
+    if (!res.data.body?.content) {
+      return null;
+    }
+
+    // Find the table at the specified index
+    for (const element of res.data.body.content) {
+      if (element.table && element.startIndex === tableStartIndex) {
+        const tableRows = element.table.tableRows || [];
+
+        if (rowIndex >= tableRows.length) {
+          throw new UserError(`Row index ${rowIndex} out of bounds. Table has ${tableRows.length} rows.`);
+        }
+
+        const row = tableRows[rowIndex];
+        const cells = row.tableCells || [];
+
+        if (columnIndex >= cells.length) {
+          throw new UserError(`Column index ${columnIndex} out of bounds. Row has ${cells.length} columns.`);
+        }
+
+        const cell = cells[columnIndex];
+        if (cell.startIndex !== undefined && cell.endIndex !== undefined) {
+          // Return the content range (excluding the start/end structural markers)
+          return {
+            startIndex: cell.startIndex!,
+            endIndex: cell.endIndex! - 1, // Exclude the end marker
+          };
+        }
+      }
+    }
+
+    return null;
+  } catch (error: any) {
+    console.error(`Error getting cell range for table at ${tableStartIndex}, cell (${rowIndex}, ${columnIndex}): ${error.message || error}`);
+    throw error;
+  }
+}
+
+/**
+ * Updates the content of a specific table cell
+ */
+export async function updateTableCellContent(
+  docs: Docs,
+  documentId: string,
+  tableStartIndex: number,
+  rowIndex: number,
+  columnIndex: number,
+  newContent: string
+): Promise<docs_v1.Schema$BatchUpdateDocumentResponse> {
+  const cellRange = await getTableCellRange(docs, documentId, tableStartIndex, rowIndex, columnIndex);
+
+  if (!cellRange) {
+    throw new UserError(`Could not find cell at row ${rowIndex}, column ${columnIndex} in table at index ${tableStartIndex}.`);
+  }
+
+  const requests: docs_v1.Schema$Request[] = [];
+
+  // Delete existing content (but preserve the cell structure)
+  // We need to delete content between startIndex+1 and endIndex
+  const contentStart = cellRange.startIndex + 1;
+  const contentEnd = cellRange.endIndex;
+
+  if (contentEnd > contentStart) {
+    requests.push({
+      deleteContentRange: {
+        range: {
+          startIndex: contentStart,
+          endIndex: contentEnd,
+        },
+      },
+    });
+  }
+
+  // Insert new content
+  if (newContent) {
+    requests.push({
+      insertText: {
+        location: { index: contentStart },
+        text: newContent,
+      },
+    });
+  }
+
+  return executeBatchUpdate(docs, documentId, requests);
+}
+
+/**
+ * Applies styling to a table cell
+ */
+export async function applyTableCellStyle(
+  docs: Docs,
+  documentId: string,
+  tableStartIndex: number,
+  rowIndex: number,
+  columnIndex: number,
+  style: any
+): Promise<docs_v1.Schema$BatchUpdateDocumentResponse> {
+  const tableCellStyle: docs_v1.Schema$TableCellStyle = {};
+  const fieldsToUpdate: string[] = [];
+
+  // Background color
+  if (style.backgroundColor) {
+    const rgbColor = hexToRgbColor(style.backgroundColor);
+    if (!rgbColor) throw new UserError(`Invalid background hex color format: ${style.backgroundColor}`);
+    tableCellStyle.backgroundColor = { color: { rgbColor } };
+    fieldsToUpdate.push('backgroundColor');
+  }
+
+  // Padding
+  if (style.paddingTop !== undefined) {
+    tableCellStyle.paddingTop = { magnitude: style.paddingTop, unit: 'PT' };
+    fieldsToUpdate.push('paddingTop');
+  }
+  if (style.paddingBottom !== undefined) {
+    tableCellStyle.paddingBottom = { magnitude: style.paddingBottom, unit: 'PT' };
+    fieldsToUpdate.push('paddingBottom');
+  }
+  if (style.paddingLeft !== undefined) {
+    tableCellStyle.paddingLeft = { magnitude: style.paddingLeft, unit: 'PT' };
+    fieldsToUpdate.push('paddingLeft');
+  }
+  if (style.paddingRight !== undefined) {
+    tableCellStyle.paddingRight = { magnitude: style.paddingRight, unit: 'PT' };
+    fieldsToUpdate.push('paddingRight');
+  }
+
+  // Borders
+  const buildBorder = (borderSpec: any) => {
+    const rgbColor = hexToRgbColor(borderSpec.color);
+    if (!rgbColor) throw new UserError(`Invalid border hex color format: ${borderSpec.color}`);
+
+    return {
+      color: { color: { rgbColor } },
+      width: { magnitude: borderSpec.width, unit: 'PT' },
+      dashStyle: borderSpec.dashStyle || 'SOLID',
+    };
+  };
+
+  if (style.borderTop) {
+    tableCellStyle.borderTop = buildBorder(style.borderTop);
+    fieldsToUpdate.push('borderTop');
+  }
+  if (style.borderBottom) {
+    tableCellStyle.borderBottom = buildBorder(style.borderBottom);
+    fieldsToUpdate.push('borderBottom');
+  }
+  if (style.borderLeft) {
+    tableCellStyle.borderLeft = buildBorder(style.borderLeft);
+    fieldsToUpdate.push('borderLeft');
+  }
+  if (style.borderRight) {
+    tableCellStyle.borderRight = buildBorder(style.borderRight);
+    fieldsToUpdate.push('borderRight');
+  }
+
+  if (fieldsToUpdate.length === 0) {
+    throw new UserError('No valid table cell styling options were provided.');
+  }
+
+  const request: docs_v1.Schema$Request = {
+    updateTableCellStyle: {
+      tableRange: {
+        tableCellLocation: {
+          tableStartLocation: { index: tableStartIndex },
+          rowIndex,
+          columnIndex,
+        },
+        rowSpan: 1,
+        columnSpan: 1,
+      },
+      tableCellStyle,
+      fields: fieldsToUpdate.join(','),
+    },
+  };
+
+  return executeBatchUpdate(docs, documentId, [request]);
+}
+
+/**
+ * Inserts a new row in a table at the specified position
+ */
+export async function insertTableRow(
+  docs: Docs,
+  documentId: string,
+  tableStartIndex: number,
+  insertBelow: boolean,
+  referenceRowIndex: number
+): Promise<docs_v1.Schema$BatchUpdateDocumentResponse> {
+  const request: docs_v1.Schema$Request = {
+    insertTableRow: {
+      tableCellLocation: {
+        tableStartLocation: { index: tableStartIndex },
+        rowIndex: referenceRowIndex,
+        columnIndex: 0,
+      },
+      insertBelow,
+    },
+  };
+
+  return executeBatchUpdate(docs, documentId, [request]);
+}
+
+/**
+ * Deletes a row from a table
+ */
+export async function deleteTableRow(
+  docs: Docs,
+  documentId: string,
+  tableStartIndex: number,
+  rowIndex: number
+): Promise<docs_v1.Schema$BatchUpdateDocumentResponse> {
+  const request: docs_v1.Schema$Request = {
+    deleteTableRow: {
+      tableCellLocation: {
+        tableStartLocation: { index: tableStartIndex },
+        rowIndex,
+        columnIndex: 0,
+      },
+    },
+  };
+
+  return executeBatchUpdate(docs, documentId, [request]);
+}
+
+/**
+ * Inserts a new column in a table at the specified position
+ */
+export async function insertTableColumn(
+  docs: Docs,
+  documentId: string,
+  tableStartIndex: number,
+  insertRight: boolean,
+  referenceColumnIndex: number
+): Promise<docs_v1.Schema$BatchUpdateDocumentResponse> {
+  const request: docs_v1.Schema$Request = {
+    insertTableColumn: {
+      tableCellLocation: {
+        tableStartLocation: { index: tableStartIndex },
+        rowIndex: 0,
+        columnIndex: referenceColumnIndex,
+      },
+      insertRight,
+    },
+  };
+
+  return executeBatchUpdate(docs, documentId, [request]);
+}
+
+/**
+ * Deletes a column from a table
+ */
+export async function deleteTableColumn(
+  docs: Docs,
+  documentId: string,
+  tableStartIndex: number,
+  columnIndex: number
+): Promise<docs_v1.Schema$BatchUpdateDocumentResponse> {
+  const request: docs_v1.Schema$Request = {
+    deleteTableColumn: {
+      tableCellLocation: {
+        tableStartLocation: { index: tableStartIndex },
+        rowIndex: 0,
+        columnIndex,
+      },
+    },
+  };
+
+  return executeBatchUpdate(docs, documentId, [request]);
 }
 
 // --- Complex / Stubbed Helpers ---

@@ -56,7 +56,7 @@ Note: The server is typically run by Claude Desktop via stdio transport, not man
 - Image upload and insertion helpers
 - Table and structure manipulation helpers
 
-### Tool Categories (30+ Tools)
+### Tool Categories (40+ Tools)
 
 1. **Document Access & Editing** (4 tools)
    - readGoogleDoc, appendToGoogleDoc, insertText, deleteRange
@@ -64,19 +64,28 @@ Note: The server is typically run by Claude Desktop via stdio transport, not man
 2. **Formatting & Styling** (3 tools)
    - applyTextStyle, applyParagraphStyle, formatMatchingText (legacy)
 
-3. **Document Structure** (5 tools)
-   - insertTable, editTableCell, insertPageBreak, insertImageFromUrl, insertLocalImage
+3. **Document Structure** (3 tools)
+   - insertTable, insertPageBreak, insertImageFromUrl, insertLocalImage
 
-4. **Comment Management** (6 tools)
+4. **Table Management** (10 tools)
+   - Discovery: listTables, getTable, getTableCell
+   - Content: updateTableCell
+   - Styling: applyTableCellStyle
+   - Structure: insertTableRow, deleteTableRow, insertTableColumn, deleteTableColumn
+
+5. **Comment Management** (6 tools)
    - listComments, getComment, addComment, replyToComment, resolveComment, deleteComment
 
-5. **Google Drive Integration** (12+ tools)
+6. **Google Drive Integration** (12+ tools)
    - Discovery: listGoogleDocs, searchGoogleDocs, getRecentGoogleDocs, getDocumentInfo
    - Folders: createFolder, listFolderContents, getFolderInfo
    - File Operations: moveFile, copyFile, renameFile, deleteFile
    - Creation: createDocument, createFromTemplate
 
-6. **Experimental/Stub Tools** (2 tools)
+7. **Google Chat Integration** (4 tools)
+   - listChatSpaces, getChatSpace, listChatMessages, getChatMessage
+
+8. **Experimental/Stub Tools** (2 tools)
    - fixListFormatting, findElement (not implemented)
 
 ### Key Design Patterns
@@ -106,6 +115,14 @@ Note: The server is typically run by Claude Desktop via stdio transport, not man
 - `insertImageFromUrl` - Direct insertion from public URLs
 - `insertLocalImage` - Uploads to Drive, makes public, then inserts
 - Supports dimension specification and folder placement
+
+**Table Handling**
+- **Discovery**: `listTables()` finds all tables in a document with dimensions and positions
+- **Reading**: `getTableStructure()` retrieves complete table data including cell content and indices
+- **Cell Operations**: `getTableCellRange()` and `updateTableCellContent()` enable precise cell manipulation
+- **Structure Modification**: Insert/delete rows and columns with proper index calculations
+- **Styling**: `applyTableCellStyle()` supports background colors, padding, and borders (all 4 sides)
+- **Index Management**: Uses 0-based row/column indexing for consistency with Google Docs API
 
 ## Important Implementation Details
 
@@ -144,6 +161,17 @@ Note: The server is typically run by Claude Desktop via stdio transport, not man
 - Template creation allows variable replacement ({{variable}})
 - File operations maintain folder structure
 - Search uses Drive API query syntax
+
+### Table Operations
+- **Table Discovery**: Use `listTables` to find all tables and their starting indices
+- **Cell Addressing**: Row and column indices are 0-based (first row is 0, first column is 0)
+- **Table Index**: The `tableIndex` parameter is the starting index of the table element (1-based document position)
+- **Cell Content Range**: Cell ranges exclude structural markers (start+1 to end-1)
+- **Batch Updates**: All table modifications use the batch update API for atomicity
+- **Structure Changes**: Row/column insertions reference existing row/column and specify position (above/below or left/right)
+- **Styling Scope**: Cell styles apply to individual cells; use tableRange with rowSpan=1, columnSpan=1
+- **Border Styles**: Supports SOLID, DOTTED, DASHED; each border (top/bottom/left/right) styled independently
+- **Padding**: Specified in points (PT) for all four sides independently
 
 ## Common Development Patterns
 

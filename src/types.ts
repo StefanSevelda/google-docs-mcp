@@ -151,6 +151,51 @@ export const MessageNameParameter = z.object({
   messageName: z.string().describe('The resource name of the message (e.g., "spaces/SPACE_ID/messages/MESSAGE_ID").'),
 });
 
+// --- Table Parameter Schemas ---
+
+export const TableLocationParameter = z.object({
+  tableIndex: z.number().int().min(1).describe('The starting index of the table element in the document (1-based).'),
+});
+
+export const TableCellLocationParameter = z.object({
+  tableIndex: z.number().int().min(1).describe('The starting index of the table element in the document (1-based).'),
+  rowIndex: z.number().int().min(0).describe('Row index (0-based).'),
+  columnIndex: z.number().int().min(0).describe('Column index (0-based).'),
+});
+
+export const TableCellStyleParameters = z.object({
+  backgroundColor: z.string()
+    .refine(validateHexColor, { message: "Invalid hex color format (e.g., #FF0000 or #F00)" })
+    .optional()
+    .describe('Set cell background color using hex format (e.g., "#FFFFFF").'),
+  paddingTop: z.number().min(0).optional().describe('Top padding in points.'),
+  paddingBottom: z.number().min(0).optional().describe('Bottom padding in points.'),
+  paddingLeft: z.number().min(0).optional().describe('Left padding in points.'),
+  paddingRight: z.number().min(0).optional().describe('Right padding in points.'),
+  borderTop: z.object({
+    width: z.number().min(0).describe('Border width in points.'),
+    color: z.string().refine(validateHexColor, { message: "Invalid hex color format" }).describe('Border color (hex format).'),
+    dashStyle: z.enum(['SOLID', 'DOTTED', 'DASHED']).optional().default('SOLID').describe('Border dash style.'),
+  }).optional().describe('Top border properties.'),
+  borderBottom: z.object({
+    width: z.number().min(0).describe('Border width in points.'),
+    color: z.string().refine(validateHexColor, { message: "Invalid hex color format" }).describe('Border color (hex format).'),
+    dashStyle: z.enum(['SOLID', 'DOTTED', 'DASHED']).optional().default('SOLID').describe('Border dash style.'),
+  }).optional().describe('Bottom border properties.'),
+  borderLeft: z.object({
+    width: z.number().min(0).describe('Border width in points.'),
+    color: z.string().refine(validateHexColor, { message: "Invalid hex color format" }).describe('Border color (hex format).'),
+    dashStyle: z.enum(['SOLID', 'DOTTED', 'DASHED']).optional().default('SOLID').describe('Border dash style.'),
+  }).optional().describe('Left border properties.'),
+  borderRight: z.object({
+    width: z.number().min(0).describe('Border width in points.'),
+    color: z.string().refine(validateHexColor, { message: "Invalid hex color format" }).describe('Border color (hex format).'),
+    dashStyle: z.enum(['SOLID', 'DOTTED', 'DASHED']).optional().default('SOLID').describe('Border dash style.'),
+  }).optional().describe('Right border properties.'),
+}).describe("Parameters for table cell styling.");
+
+export type TableCellStyleArgs = z.infer<typeof TableCellStyleParameters>;
+
 // --- Error Class ---
 // Use FastMCP's UserError for client-facing issues
 // Define a custom error for internal issues if needed
