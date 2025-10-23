@@ -222,6 +222,7 @@ export const CreateEventParameters = CalendarIdParameter.extend({
   startDate: z.string().optional().describe('Start date for all-day event in YYYY-MM-DD format (e.g., "2024-01-15").'),
   endDate: z.string().optional().describe('End date for all-day event in YYYY-MM-DD format (e.g., "2024-01-16"). Exclusive, so for single-day use next day.'),
   timeZone: z.string().optional().describe('Time zone for the event (e.g., "America/Los_Angeles"). Defaults to calendar time zone.'),
+  eventType: z.enum(['default', 'focusTime', 'outOfOffice', 'workingLocation']).optional().default('default').describe('Type of event: "default" for regular events, "focusTime" for focus time blocks, "outOfOffice" for out-of-office periods, "workingLocation" for working location events.'),
   attendees: z.array(z.object({
     email: z.string().email().describe('Email address of attendee.'),
     optional: z.boolean().optional().describe('Whether attendance is optional.'),

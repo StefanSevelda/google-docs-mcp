@@ -2673,11 +2673,11 @@ server.addTool({
 
 server.addTool({
   name: 'createCalendarEvent',
-  description: 'Creates a new event in a Google Calendar.',
+  description: 'Creates a new event in a Google Calendar. Supports regular events, focus time, out of office, and working location events.',
   parameters: CreateEventParameters,
   execute: async (args, { log }) => {
     const calendar = await getCalendarClient();
-    log.info(`Creating event "${args.summary}" in calendar ${args.calendarId}`);
+    log.info(`Creating ${args.eventType} event "${args.summary}" in calendar ${args.calendarId}`);
 
     try {
       // Validate that we have either dateTime or date for start/end
@@ -2707,6 +2707,53 @@ server.addTool({
         colorId: args.colorId,
       };
 
+      // Apply event type-specific properties
+      switch (args.eventType) {
+        case 'focusTime':
+          // Focus time: block out time for deep work
+          eventResource.eventType = 'focusTime';
+          // Set transparency to opaque (shows as busy)
+          eventResource.transparency = 'opaque';
+          // Default to private if not specified
+          if (!args.visibility) {
+            eventResource.visibility = 'private';
+          }
+          // Disable reminders by default for focus time
+          if (!args.reminders) {
+            eventResource.reminders = { useDefault: false, overrides: [] };
+          }
+          log.info('Creating focus time event with busy status');
+          break;
+
+        case 'outOfOffice':
+          // Out of office: mark user as unavailable
+          eventResource.eventType = 'outOfOffice';
+          // Set transparency to opaque (shows as busy)
+          eventResource.transparency = 'opaque';
+          // Out of office events MUST NOT have a description - remove it if provided
+          delete eventResource.description;
+          log.info('Creating out-of-office event');
+          break;
+
+        case 'workingLocation':
+          // Working location: indicate where user is working from
+          eventResource.eventType = 'workingLocation';
+          // Location is required for working location events
+          if (!args.location) {
+            throw new UserError('Location is required for working location events');
+          }
+          // Set transparency to transparent (shows as available)
+          eventResource.transparency = 'transparent';
+          log.info(`Creating working location event at ${args.location}`);
+          break;
+
+        case 'default':
+        default:
+          // Regular event - no special properties
+          log.info('Creating regular calendar event');
+          break;
+      }
+
       const response = await calendar.events.insert({
         calendarId: args.calendarId,
         requestBody: eventResource,
@@ -2714,8 +2761,24 @@ server.addTool({
       });
 
       const event = response.data;
-      let result = `Successfully created event "${event.summary}"\n`;
+      let result = `Successfully created ${args.eventType === 'default' ? '' : args.eventType + ' '}event "${event.summary}"\n`;
       result += `Event ID: ${event.id}\n`;
+      result += `Event Type: ${args.eventType}\n`;
+
+      if (event.start?.dateTime) {
+        result += `Start: ${new Date(event.start.dateTime).toLocaleString()}\n`;
+        result += `End: ${event.end?.dateTime ? new Date(event.end.dateTime).toLocaleString() : 'Unknown'}\n`;
+      } else if (event.start?.date) {
+        result += `Date: ${event.start.date}${event.end?.date ? ` to ${event.end.date}` : ''} (All-day)\n`;
+      }
+
+      if (event.location) {
+        result += `Location: ${event.location}\n`;
+      }
+
+      if (event.transparency) {
+        result += `Status: ${event.transparency === 'opaque' ? 'Busy' : 'Available'}\n`;
+      }
 
       if (event.htmlLink) {
         result += `View in Calendar: ${event.htmlLink}\n`;
