@@ -1,14 +1,15 @@
-# Google Docs, Drive & Chat MCP Server
+# Google Docs, Drive, Chat & Calendar MCP Server
 
 ![Demo Animation](assets/google.docs.mcp.1.gif)
 
-Connect Claude Desktop, Claude Code, or other MCP clients to your Google Docs, Google Drive, and Google Chat!
+Connect Claude Desktop, Claude Code, or other MCP clients to your Google Docs, Google Drive, Google Chat, and Google Calendar!
 
 > 🔥 **Check out [15 powerful tasks](SAMPLE_TASKS.md) you can accomplish with this server!**
 > 📁 **NEW:** Complete Google Drive file management capabilities!
 > 💬 **NEW:** Google Chat integration - read and analyze your team conversations!
+> 📅 **NEW:** Google Calendar integration - manage your schedule and events!
 
-A comprehensive MCP server providing 30+ tools for reading, writing, formatting Google Documents, managing Drive files, handling comments, and reading Google Chat messages—all through natural language commands.
+A comprehensive MCP server providing 40+ tools for reading, writing, formatting Google Documents, managing Drive files, handling comments, reading Google Chat messages, and managing your Google Calendar—all through natural language commands.
 
 ## Key Features
 
@@ -16,6 +17,7 @@ A comprehensive MCP server providing 30+ tools for reading, writing, formatting 
 **Drive:** List/search/create documents, manage folders, move/copy/rename/delete files
 **Comments:** List, add, reply, resolve, and delete document comments
 **Chat:** Read spaces and messages from Google Chat (read-only)
+**Calendar:** List calendars, manage events, view schedules
 **Authentication:** Secure OAuth 2.0 with Google APIs
 
 **Full feature list:** [SAMPLE_TASKS.md](SAMPLE_TASKS.md) | **Architecture:** [CLAUDE.md](CLAUDE.md)
@@ -80,7 +82,7 @@ Create OAuth credentials to access Google APIs:
 
 1. Go to [Google Cloud Console](https://console.cloud.google.com/)
 2. Create/select a project
-3. Enable **Google Docs API**, **Google Drive API**, and **Google Chat API**
+3. Enable **Google Docs API**, **Google Drive API**, **Google Chat API**, and **Google Calendar API**
 4. Configure OAuth Consent Screen:
    - User Type: **External**
    - Add scopes:
@@ -88,6 +90,7 @@ Create OAuth credentials to access Google APIs:
      - `https://www.googleapis.com/auth/drive` (Drive access)
      - `https://www.googleapis.com/auth/chat.spaces.readonly` (Chat spaces - optional)
      - `https://www.googleapis.com/auth/chat.messages.readonly` (Chat messages - optional)
+     - `https://www.googleapis.com/auth/calendar` (Calendar access - optional)
    - Add yourself as Test User
 5. Create Credentials → OAuth client ID → **Desktop app**
 6. Download JSON → Rename to `credentials.json`
@@ -232,6 +235,14 @@ Claude Code will automatically launch the MCP server when needed.
 "List my Google Chat spaces"
 "Show me the last 50 messages from the Core Systems AI space"
 "Read the conversation history from space spaces/AAQAtBJLgmM"
+```
+
+**Google Calendar:**
+```
+"List my calendars"
+"Show me events for this week"
+"Create a meeting titled 'Team Sync' tomorrow at 2pm"
+"What's on my calendar for next Monday?"
 ```
 
 See [SAMPLE_TASKS.md](SAMPLE_TASKS.md) for more detailed examples.
@@ -389,6 +400,204 @@ Alternatively, you can describe the space by name:
 - Be mindful when sharing Chat summaries or message content
 - The `token.json` file contains access to your Chat messages - protect it carefully
 - Consider the sensitivity of your Chat conversations before using this integration
+
+---
+
+## Google Calendar Integration
+
+Manage your Google Calendar events, view your schedule, and create meetings directly through natural language commands.
+
+### Prerequisites for Google Calendar
+
+The Google Calendar scope is already included in the `auth.ts` file:
+- `https://www.googleapis.com/auth/calendar` - Full access to manage calendar events
+
+**Important:** If you've already authorized the server, you'll need to re-authorize to grant Calendar permissions:
+
+1. **Delete the existing token:**
+   ```bash
+   rm token.json
+   ```
+
+2. **Re-run the authorization process:**
+   ```bash
+   node ./dist/server.js
+   ```
+
+3. **Grant permissions:** When the authorization screen appears, you'll now see requests for Calendar permissions in addition to Docs, Drive, and Chat. Click "Allow" to grant all permissions.
+
+### Available Google Calendar Tools
+
+#### 1. List Calendars (`listCalendars`)
+
+Lists all calendars you have access to.
+
+**Parameters:**
+- `minAccessRole` (optional): Filter by minimum access role (freeBusyReader, reader, writer, owner)
+- `showHidden` (optional): Whether to show hidden calendars (default: false)
+- `maxResults` (optional): Maximum number to return (1-250, default: 100)
+- `pageToken` (optional): Token for pagination
+
+**Example prompts:**
+- "List my calendars"
+- "Show me all my Google calendars"
+- "What calendars do I have access to?"
+
+**Returns:** List of calendars with IDs, names, access roles, and time zones.
+
+#### 2. List Calendar Events (`listCalendarEvents`)
+
+Lists events from a specific calendar within a time range.
+
+**Parameters:**
+- `calendarId` (optional): Calendar ID (default: "primary" for your main calendar)
+- `timeMin` (optional): Start of time range in RFC3339 format (e.g., "2024-01-01T00:00:00Z")
+- `timeMax` (optional): End of time range in RFC3339 format
+- `maxResults` (optional): Maximum events to return (1-2500, default: 250)
+- `orderBy` (optional): Sort order - "startTime" or "updated"
+- `q` (optional): Free text search query
+- `pageToken` (optional): Token for pagination
+
+**Example prompts:**
+- "Show me events for this week"
+- "What's on my calendar today?"
+- "List all meetings in January 2024"
+- "Find events containing 'review' in my calendar"
+
+**Returns:** List of events with titles, times, locations, attendees, and meeting links.
+
+#### 3. Get Calendar Event (`getCalendarEvent`)
+
+Gets detailed information about a specific event.
+
+**Parameters:**
+- `calendarId` (optional): Calendar ID (default: "primary")
+- `eventId` (required): The event ID
+
+**Example prompts:**
+- "Show me details for event abc123"
+- "Get full information about that meeting"
+
+**Returns:** Complete event details including description, attendees, recurrence, and conference info.
+
+#### 4. Create Calendar Event (`createCalendarEvent`)
+
+Creates a new event in your calendar.
+
+**Parameters:**
+- `calendarId` (optional): Calendar ID (default: "primary")
+- `summary` (required): Event title
+- `description` (optional): Event description
+- `location` (optional): Event location
+- `startDateTime` (optional): Start time in RFC3339 format (for timed events)
+- `endDateTime` (optional): End time in RFC3339 format (for timed events)
+- `startDate` (optional): Start date in YYYY-MM-DD format (for all-day events)
+- `endDate` (optional): End date in YYYY-MM-DD format (for all-day events)
+- `timeZone` (optional): Time zone (e.g., "America/Los_Angeles")
+- `attendees` (optional): List of attendee email addresses
+- `recurrence` (optional): Recurrence rules (e.g., ["RRULE:FREQ=DAILY;COUNT=5"])
+- `reminders` (optional): Custom reminder settings
+- `conferenceData` (optional): Video conference settings
+- `visibility` (optional): Event visibility (default, public, private, confidential)
+
+**Example prompts:**
+- "Create a meeting titled 'Team Sync' tomorrow at 2pm"
+- "Schedule an all-day event 'Conference' on March 15th"
+- "Add a 30-minute call with john@example.com next Monday at 10am"
+
+**Returns:** Confirmation with event ID and calendar link.
+
+#### 5. Update Calendar Event (`updateCalendarEvent`)
+
+Updates an existing calendar event.
+
+**Parameters:**
+- `calendarId` (optional): Calendar ID (default: "primary")
+- `eventId` (required): The event ID to update
+- `summary` (optional): New event title
+- `description` (optional): New description
+- `location` (optional): New location
+- `startDateTime` / `startDate` (optional): New start time/date
+- `endDateTime` / `endDate` (optional): New end time/date
+- `attendees` (optional): Updated attendee list
+- `status` (optional): Event status (confirmed, tentative, cancelled)
+
+**Example prompts:**
+- "Move that meeting to 3pm"
+- "Change the location of event abc123 to 'Conference Room A'"
+- "Add sarah@example.com to tomorrow's team meeting"
+
+**Returns:** Confirmation with updated event details.
+
+#### 6. Delete Calendar Event (`deleteCalendarEvent`)
+
+Deletes an event from your calendar.
+
+**Parameters:**
+- `calendarId` (optional): Calendar ID (default: "primary")
+- `eventId` (required): The event ID to delete
+
+**Example prompts:**
+- "Delete event abc123"
+- "Cancel tomorrow's 10am meeting"
+- "Remove that event from my calendar"
+
+**Returns:** Confirmation that the event was deleted.
+
+### Google Calendar Usage Examples
+
+Here are practical examples of how to use Calendar integration with Claude:
+
+1. **Daily schedule review:**
+   ```
+   "What meetings do I have today?"
+   "Show me my schedule for tomorrow"
+   ```
+
+2. **Weekly planning:**
+   ```
+   "List all my events for this week"
+   "What's my availability next week?"
+   ```
+
+3. **Meeting management:**
+   ```
+   "Create a 1-hour meeting with john@example.com titled 'Project Review' next Tuesday at 2pm"
+   "Add a reminder for 'Dentist Appointment' on Friday at 9am"
+   ```
+
+4. **Event scheduling:**
+   ```
+   "Schedule a recurring weekly meeting every Monday at 10am"
+   "Block my calendar for 'Focus Time' every afternoon from 2-4pm"
+   ```
+
+5. **Calendar organization:**
+   ```
+   "List all meetings containing 'review' in the next month"
+   "Find free slots in my calendar this week"
+   ```
+
+### Time Formats
+
+**For timed events (specific hours):**
+- Use RFC3339 format with timezone: `"2024-01-15T14:00:00-08:00"`
+- Or ISO 8601 format: `"2024-01-15T14:00:00Z"`
+
+**For all-day events:**
+- Use date format: `"2024-01-15"`
+- End date is exclusive (use next day for single-day events)
+
+**Natural language:** Claude can convert natural language like "tomorrow at 2pm" or "next Monday" into proper date formats.
+
+### Privacy & Security
+
+**Important considerations:**
+- This server has full access to your Google Calendar
+- Events are only processed locally and sent to Claude when you explicitly request them
+- Be mindful when sharing calendar information
+- The `token.json` file contains access to your calendar - protect it carefully
+- Consider the sensitivity of your meeting information before using this integration
 
 ---
 

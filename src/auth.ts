@@ -24,7 +24,8 @@ const SCOPES = [
   'https://www.googleapis.com/auth/documents',
   'https://www.googleapis.com/auth/drive', // Full Drive access for listing, searching, and document discovery
   'https://www.googleapis.com/auth/chat.spaces.readonly', // Read Google Chat spaces
-  'https://www.googleapis.com/auth/chat.messages.readonly' // Read Google Chat messages
+  'https://www.googleapis.com/auth/chat.messages.readonly', // Read Google Chat messages
+  'https://www.googleapis.com/auth/calendar' // Full Calendar access for event management
 ];
 
 async function loadSavedCredentialsIfExist(): Promise<OAuth2Client | null> {

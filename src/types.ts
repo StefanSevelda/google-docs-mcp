@@ -196,6 +196,106 @@ export const TableCellStyleParameters = z.object({
 
 export type TableCellStyleArgs = z.infer<typeof TableCellStyleParameters>;
 
+// --- Google Calendar Parameter Schemas ---
+
+export const CalendarIdParameter = z.object({
+  calendarId: z.string().default('primary').describe('The calendar ID (e.g., "primary" for the user\'s primary calendar or the calendar email).'),
+});
+
+export const EventIdParameter = z.object({
+  eventId: z.string().describe('The event ID.'),
+});
+
+export const ListCalendarsParameters = z.object({
+  minAccessRole: z.enum(['freeBusyReader', 'reader', 'writer', 'owner']).optional().describe('The minimum access role for calendars to return.'),
+  showHidden: z.boolean().optional().default(false).describe('Whether to show hidden calendars.'),
+  maxResults: z.number().int().min(1).max(250).optional().default(100).describe('Maximum number of calendars to return (1-250).'),
+  pageToken: z.string().optional().describe('Token for pagination.'),
+});
+
+export const CreateEventParameters = CalendarIdParameter.extend({
+  summary: z.string().min(1).describe('Title of the event.'),
+  description: z.string().optional().describe('Description of the event (supports plain text or markdown).'),
+  location: z.string().optional().describe('Location of the event.'),
+  startDateTime: z.string().optional().describe('Start date-time in RFC3339 format (e.g., "2024-01-15T09:00:00-07:00"). For all-day events, use startDate instead.'),
+  endDateTime: z.string().optional().describe('End date-time in RFC3339 format (e.g., "2024-01-15T10:00:00-07:00"). For all-day events, use endDate instead.'),
+  startDate: z.string().optional().describe('Start date for all-day event in YYYY-MM-DD format (e.g., "2024-01-15").'),
+  endDate: z.string().optional().describe('End date for all-day event in YYYY-MM-DD format (e.g., "2024-01-16"). Exclusive, so for single-day use next day.'),
+  timeZone: z.string().optional().describe('Time zone for the event (e.g., "America/Los_Angeles"). Defaults to calendar time zone.'),
+  attendees: z.array(z.object({
+    email: z.string().email().describe('Email address of attendee.'),
+    optional: z.boolean().optional().describe('Whether attendance is optional.'),
+    responseStatus: z.enum(['needsAction', 'declined', 'tentative', 'accepted']).optional().describe('Response status.'),
+  })).optional().describe('List of event attendees.'),
+  recurrence: z.array(z.string()).optional().describe('RRULE, EXDATE, RDATE for recurring events (e.g., ["RRULE:FREQ=DAILY;COUNT=5"]).'),
+  reminders: z.object({
+    useDefault: z.boolean().optional().describe('Use default reminders for the calendar.'),
+    overrides: z.array(z.object({
+      method: z.enum(['email', 'popup']).describe('Reminder method.'),
+      minutes: z.number().int().min(0).describe('Minutes before event to trigger reminder.'),
+    })).optional().describe('Custom reminder overrides.'),
+  }).optional().describe('Event reminders.'),
+  conferenceData: z.object({
+    createRequest: z.object({
+      requestId: z.string().describe('Unique request ID for conference creation.'),
+      conferenceSolutionKey: z.object({
+        type: z.enum(['hangoutsMeet', 'eventHangout']).describe('Type of conference solution.'),
+      }).describe('Conference solution key.'),
+    }).optional().describe('Request to create a conference.'),
+  }).optional().describe('Conference data for video meetings.'),
+  visibility: z.enum(['default', 'public', 'private', 'confidential']).optional().describe('Visibility of the event.'),
+  colorId: z.string().optional().describe('Color ID for the event (1-11).'),
+});
+
+export const UpdateEventParameters = CalendarIdParameter.extend({
+  eventId: z.string().describe('The event ID to update.'),
+  summary: z.string().optional().describe('New title of the event.'),
+  description: z.string().optional().describe('New description of the event.'),
+  location: z.string().optional().describe('New location of the event.'),
+  startDateTime: z.string().optional().describe('New start date-time in RFC3339 format.'),
+  endDateTime: z.string().optional().describe('New end date-time in RFC3339 format.'),
+  startDate: z.string().optional().describe('New start date for all-day event in YYYY-MM-DD format.'),
+  endDate: z.string().optional().describe('New end date for all-day event in YYYY-MM-DD format.'),
+  timeZone: z.string().optional().describe('New time zone for the event.'),
+  attendees: z.array(z.object({
+    email: z.string().email().describe('Email address of attendee.'),
+    optional: z.boolean().optional().describe('Whether attendance is optional.'),
+  })).optional().describe('New list of event attendees (replaces existing).'),
+  recurrence: z.array(z.string()).optional().describe('New recurrence rules (replaces existing).'),
+  reminders: z.object({
+    useDefault: z.boolean().optional().describe('Use default reminders.'),
+    overrides: z.array(z.object({
+      method: z.enum(['email', 'popup']).describe('Reminder method.'),
+      minutes: z.number().int().min(0).describe('Minutes before event.'),
+    })).optional(),
+  }).optional().describe('New event reminders.'),
+  visibility: z.enum(['default', 'public', 'private', 'confidential']).optional().describe('New visibility.'),
+  colorId: z.string().optional().describe('New color ID (1-11).'),
+  status: z.enum(['confirmed', 'tentative', 'cancelled']).optional().describe('Event status.'),
+});
+
+export const ListEventsParameters = CalendarIdParameter.extend({
+  timeMin: z.string().optional().describe('Lower bound (inclusive) for event start time in RFC3339 format (e.g., "2024-01-01T00:00:00Z").'),
+  timeMax: z.string().optional().describe('Upper bound (exclusive) for event start time in RFC3339 format.'),
+  maxResults: z.number().int().min(1).max(2500).optional().default(250).describe('Maximum number of events to return (1-2500).'),
+  pageToken: z.string().optional().describe('Token for pagination.'),
+  orderBy: z.enum(['startTime', 'updated']).optional().describe('Order of events returned.'),
+  singleEvents: z.boolean().optional().default(true).describe('Whether to expand recurring events into instances.'),
+  showDeleted: z.boolean().optional().default(false).describe('Whether to include deleted events.'),
+  q: z.string().optional().describe('Free text search query.'),
+});
+
+export const FreeBusyParameters = z.object({
+  timeMin: z.string().describe('Start time for free/busy query in RFC3339 format (e.g., "2024-01-15T09:00:00Z").'),
+  timeMax: z.string().describe('End time for free/busy query in RFC3339 format.'),
+  calendarIds: z.array(z.string()).min(1).describe('List of calendar IDs to query (e.g., ["primary", "email@example.com"]).'),
+  timeZone: z.string().optional().describe('Time zone for the query (e.g., "America/Los_Angeles").'),
+});
+
+export type CreateEventArgs = z.infer<typeof CreateEventParameters>;
+export type UpdateEventArgs = z.infer<typeof UpdateEventParameters>;
+export type ListEventsArgs = z.infer<typeof ListEventsParameters>;
+
 // --- Error Class ---
 // Use FastMCP's UserError for client-facing issues
 // Define a custom error for internal issues if needed

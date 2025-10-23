@@ -1,7 +1,7 @@
 // src/server.ts
 import { FastMCP, UserError } from 'fastmcp';
 import { z } from 'zod';
-import { google, docs_v1, drive_v3, chat_v1 } from 'googleapis';
+import { google, docs_v1, drive_v3, chat_v1, calendar_v3 } from 'googleapis';
 import { authorize } from './auth.js';
 import { OAuth2Client } from 'google-auth-library';
 
@@ -22,6 +22,16 @@ SpaceNameParameter,
 ListSpacesParameters,
 ListMessagesParameters,
 MessageNameParameter,
+CalendarIdParameter,
+EventIdParameter,
+ListCalendarsParameters,
+CreateEventParameters,
+UpdateEventParameters,
+ListEventsParameters,
+FreeBusyParameters,
+CreateEventArgs,
+UpdateEventArgs,
+ListEventsArgs,
 NotImplementedError
 } from './types.js';
 import * as GDocsHelpers from './googleDocsApiHelpers.js';
@@ -31,10 +41,11 @@ let authClient: OAuth2Client | null = null;
 let googleDocs: docs_v1.Docs | null = null;
 let googleDrive: drive_v3.Drive | null = null;
 let googleChat: chat_v1.Chat | null = null;
+let googleCalendar: calendar_v3.Calendar | null = null;
 
 // --- Initialization ---
 async function initializeGoogleClient() {
-if (googleDocs && googleDrive && googleChat) return { authClient, googleDocs, googleDrive, googleChat };
+if (googleDocs && googleDrive && googleChat && googleCalendar) return { authClient, googleDocs, googleDrive, googleChat, googleCalendar };
 if (!authClient) { // Check authClient instead of googleDocs to allow re-attempt
 try {
 console.error("Attempting to authorize Google API client...");
@@ -43,6 +54,7 @@ authClient = client; // Assign client here
 googleDocs = google.docs({ version: 'v1', auth: authClient });
 googleDrive = google.drive({ version: 'v3', auth: authClient });
 googleChat = google.chat({ version: 'v1', auth: authClient });
+googleCalendar = google.calendar({ version: 'v3', auth: authClient });
 console.error("Google API client authorized successfully.");
 } catch (error) {
 console.error("FATAL: Failed to initialize Google API client:", error);
@@ -50,11 +62,12 @@ authClient = null; // Reset on failure
 googleDocs = null;
 googleDrive = null;
 googleChat = null;
+googleCalendar = null;
 // Decide if server should exit or just fail tools
 throw new Error("Google client initialization failed. Cannot start server tools.");
 }
 }
-// Ensure googleDocs, googleDrive, and googleChat are set if authClient is valid
+// Ensure googleDocs, googleDrive, googleChat, and googleCalendar are set if authClient is valid
 if (authClient && !googleDocs) {
 googleDocs = google.docs({ version: 'v1', auth: authClient });
 }
@@ -64,12 +77,15 @@ googleDrive = google.drive({ version: 'v3', auth: authClient });
 if (authClient && !googleChat) {
 googleChat = google.chat({ version: 'v1', auth: authClient });
 }
-
-if (!googleDocs || !googleDrive || !googleChat) {
-throw new Error("Google Docs, Drive, and Chat clients could not be initialized.");
+if (authClient && !googleCalendar) {
+googleCalendar = google.calendar({ version: 'v3', auth: authClient });
 }
 
-return { authClient, googleDocs, googleDrive, googleChat };
+if (!googleDocs || !googleDrive || !googleChat || !googleCalendar) {
+throw new Error("Google Docs, Drive, Chat, and Calendar clients could not be initialized.");
+}
+
+return { authClient, googleDocs, googleDrive, googleChat, googleCalendar };
 }
 
 // SECURITY NOTE: Previously had global error handlers here that suppressed all exceptions.
@@ -107,6 +123,15 @@ if (!chat) {
 throw new UserError("Google Chat client is not initialized. Authentication might have failed during startup or lost connection.");
 }
 return chat;
+}
+
+// --- Helper to get Calendar client within tools ---
+async function getCalendarClient() {
+const { googleCalendar: calendar } = await initializeGoogleClient();
+if (!calendar) {
+throw new UserError("Google Calendar client is not initialized. Authentication might have failed during startup or lost connection.");
+}
+return calendar;
 }
 
 // === HELPER FUNCTIONS ===
@@ -2414,6 +2439,401 @@ server.addTool({
       log.error(`Error getting Chat message: ${error.message || error}`);
       if (error instanceof UserError) throw error;
       throw new UserError(`Failed to get Chat message: ${error.message || 'Unknown error'}`);
+    }
+  }
+});
+
+// === GOOGLE CALENDAR TOOLS ===
+
+server.addTool({
+  name: 'listCalendars',
+  description: 'Lists calendars accessible to the authenticated user.',
+  parameters: ListCalendarsParameters,
+  execute: async (args, { log }) => {
+    const calendar = await getCalendarClient();
+    log.info(`Listing calendars. Min access role: ${args.minAccessRole || 'none'}`);
+
+    try {
+      const response = await calendar.calendarList.list({
+        minAccessRole: args.minAccessRole,
+        showHidden: args.showHidden,
+        maxResults: args.maxResults,
+        pageToken: args.pageToken,
+      });
+
+      const calendars = response.data.items || [];
+
+      if (calendars.length === 0) {
+        return 'No calendars found or accessible.';
+      }
+
+      let result = `Found ${calendars.length} calendar${calendars.length !== 1 ? 's' : ''}:\n\n`;
+
+      calendars.forEach((cal, index) => {
+        result += `${index + 1}. **${cal.summary}**\n`;
+        result += `   ID: ${cal.id}\n`;
+        result += `   Access Role: ${cal.accessRole}\n`;
+        result += `   Time Zone: ${cal.timeZone || 'Unknown'}\n`;
+        if (cal.description) {
+          result += `   Description: ${cal.description}\n`;
+        }
+        if (cal.primary) {
+          result += `   **Primary Calendar**\n`;
+        }
+        result += '\n';
+      });
+
+      if (response.data.nextPageToken) {
+        result += `\n**More results available.** Use pageToken="${response.data.nextPageToken}" to get the next page.`;
+      }
+
+      return result;
+    } catch (error: any) {
+      log.error(`Error listing calendars: ${error.message || error}`);
+      if (error.code === 403) throw new UserError('Permission denied. Make sure you have granted Google Calendar access.');
+      throw new UserError(`Failed to list calendars: ${error.message || 'Unknown error'}`);
+    }
+  }
+});
+
+server.addTool({
+  name: 'listCalendarEvents',
+  description: 'Lists events from a specific calendar within a time range.',
+  parameters: ListEventsParameters,
+  execute: async (args, { log }) => {
+    const calendar = await getCalendarClient();
+    log.info(`Listing events from calendar: ${args.calendarId}`);
+
+    try {
+      const response = await calendar.events.list({
+        calendarId: args.calendarId,
+        timeMin: args.timeMin,
+        timeMax: args.timeMax,
+        maxResults: args.maxResults,
+        pageToken: args.pageToken,
+        orderBy: args.orderBy,
+        singleEvents: args.singleEvents,
+        showDeleted: args.showDeleted,
+        q: args.q,
+      });
+
+      const events = response.data.items || [];
+
+      if (events.length === 0) {
+        return `No events found in calendar ${args.calendarId} for the specified time range.`;
+      }
+
+      let result = `Found ${events.length} event${events.length !== 1 ? 's' : ''}:\n\n`;
+
+      events.forEach((event, index) => {
+        result += `${index + 1}. **${event.summary || '(No title)'}**\n`;
+        result += `   Event ID: ${event.id}\n`;
+
+        if (event.start?.dateTime) {
+          const startTime = new Date(event.start.dateTime).toLocaleString();
+          const endTime = event.end?.dateTime ? new Date(event.end.dateTime).toLocaleString() : 'Unknown';
+          result += `   Time: ${startTime} - ${endTime}\n`;
+        } else if (event.start?.date) {
+          result += `   Date: ${event.start.date}${event.end?.date ? ` to ${event.end.date}` : ''} (All-day)\n`;
+        }
+
+        if (event.location) {
+          result += `   Location: ${event.location}\n`;
+        }
+
+        if (event.description) {
+          const desc = event.description.length > 100 ? event.description.substring(0, 100) + '...' : event.description;
+          result += `   Description: ${desc}\n`;
+        }
+
+        if (event.attendees && event.attendees.length > 0) {
+          result += `   Attendees: ${event.attendees.length}\n`;
+        }
+
+        if (event.hangoutLink) {
+          result += `   Meeting Link: ${event.hangoutLink}\n`;
+        }
+
+        if (event.htmlLink) {
+          result += `   View in Calendar: ${event.htmlLink}\n`;
+        }
+
+        result += '\n';
+      });
+
+      if (response.data.nextPageToken) {
+        result += `\n**More events available.** Use pageToken="${response.data.nextPageToken}" to get the next page.`;
+      }
+
+      return result;
+    } catch (error: any) {
+      log.error(`Error listing events: ${error.message || error}`);
+      if (error.code === 404) throw new UserError(`Calendar not found: ${args.calendarId}`);
+      if (error.code === 403) throw new UserError('Permission denied. Make sure you have access to this calendar.');
+      throw new UserError(`Failed to list events: ${error.message || 'Unknown error'}`);
+    }
+  }
+});
+
+server.addTool({
+  name: 'getCalendarEvent',
+  description: 'Gets detailed information about a specific calendar event.',
+  parameters: CalendarIdParameter.extend({
+    eventId: z.string().describe('The event ID.'),
+  }),
+  execute: async (args, { log }) => {
+    const calendar = await getCalendarClient();
+    log.info(`Getting event ${args.eventId} from calendar ${args.calendarId}`);
+
+    try {
+      const response = await calendar.events.get({
+        calendarId: args.calendarId,
+        eventId: args.eventId,
+      });
+
+      const event = response.data;
+
+      let result = `**Event Details:**\n\n`;
+      result += `**Title:** ${event.summary || '(No title)'}\n`;
+      result += `**Event ID:** ${event.id}\n`;
+      result += `**Status:** ${event.status}\n`;
+
+      if (event.start?.dateTime) {
+        const startTime = new Date(event.start.dateTime).toLocaleString();
+        const endTime = event.end?.dateTime ? new Date(event.end.dateTime).toLocaleString() : 'Unknown';
+        result += `**Time:** ${startTime} - ${endTime}\n`;
+        result += `**Time Zone:** ${event.start.timeZone || 'Default'}\n`;
+      } else if (event.start?.date) {
+        result += `**Date:** ${event.start.date}${event.end?.date ? ` to ${event.end.date}` : ''} (All-day event)\n`;
+      }
+
+      if (event.location) {
+        result += `**Location:** ${event.location}\n`;
+      }
+
+      if (event.description) {
+        result += `**Description:**\n${event.description}\n\n`;
+      }
+
+      if (event.attendees && event.attendees.length > 0) {
+        result += `**Attendees:**\n`;
+        event.attendees.forEach(attendee => {
+          const status = attendee.responseStatus || 'needsAction';
+          const optional = attendee.optional ? ' (optional)' : '';
+          result += `  - ${attendee.email}${optional}: ${status}\n`;
+        });
+        result += '\n';
+      }
+
+      if (event.recurrence && event.recurrence.length > 0) {
+        result += `**Recurrence:**\n`;
+        event.recurrence.forEach(rule => {
+          result += `  ${rule}\n`;
+        });
+        result += '\n';
+      }
+
+      if (event.hangoutLink) {
+        result += `**Meeting Link:** ${event.hangoutLink}\n`;
+      }
+
+      if (event.conferenceData?.entryPoints) {
+        result += `**Conference Info:**\n`;
+        event.conferenceData.entryPoints.forEach(entry => {
+          result += `  ${entry.entryPointType}: ${entry.uri || entry.label}\n`;
+        });
+        result += '\n';
+      }
+
+      if (event.htmlLink) {
+        result += `**View in Calendar:** ${event.htmlLink}\n`;
+      }
+
+      if (event.creator) {
+        result += `**Created by:** ${event.creator.email}\n`;
+      }
+
+      if (event.created) {
+        result += `**Created:** ${new Date(event.created).toLocaleString()}\n`;
+      }
+
+      if (event.updated) {
+        result += `**Last Updated:** ${new Date(event.updated).toLocaleString()}\n`;
+      }
+
+      return result;
+    } catch (error: any) {
+      log.error(`Error getting event: ${error.message || error}`);
+      if (error.code === 404) throw new UserError(`Event not found: ${args.eventId}`);
+      if (error.code === 403) throw new UserError('Permission denied. Make sure you have access to this calendar.');
+      throw new UserError(`Failed to get event: ${error.message || 'Unknown error'}`);
+    }
+  }
+});
+
+server.addTool({
+  name: 'createCalendarEvent',
+  description: 'Creates a new event in a Google Calendar.',
+  parameters: CreateEventParameters,
+  execute: async (args, { log }) => {
+    const calendar = await getCalendarClient();
+    log.info(`Creating event "${args.summary}" in calendar ${args.calendarId}`);
+
+    try {
+      // Validate that we have either dateTime or date for start/end
+      if (!args.startDateTime && !args.startDate) {
+        throw new UserError('Must provide either startDateTime (for timed events) or startDate (for all-day events).');
+      }
+
+      if (!args.endDateTime && !args.endDate) {
+        throw new UserError('Must provide either endDateTime (for timed events) or endDate (for all-day events).');
+      }
+
+      const eventResource: calendar_v3.Schema$Event = {
+        summary: args.summary,
+        description: args.description,
+        location: args.location,
+        start: args.startDateTime
+          ? { dateTime: args.startDateTime, timeZone: args.timeZone }
+          : { date: args.startDate },
+        end: args.endDateTime
+          ? { dateTime: args.endDateTime, timeZone: args.timeZone }
+          : { date: args.endDate },
+        attendees: args.attendees,
+        recurrence: args.recurrence,
+        reminders: args.reminders,
+        conferenceData: args.conferenceData,
+        visibility: args.visibility,
+        colorId: args.colorId,
+      };
+
+      const response = await calendar.events.insert({
+        calendarId: args.calendarId,
+        requestBody: eventResource,
+        conferenceDataVersion: args.conferenceData ? 1 : undefined,
+      });
+
+      const event = response.data;
+      let result = `Successfully created event "${event.summary}"\n`;
+      result += `Event ID: ${event.id}\n`;
+
+      if (event.htmlLink) {
+        result += `View in Calendar: ${event.htmlLink}\n`;
+      }
+
+      if (event.hangoutLink) {
+        result += `Meeting Link: ${event.hangoutLink}\n`;
+      }
+
+      return result;
+    } catch (error: any) {
+      log.error(`Error creating event: ${error.message || error}`);
+      if (error.code === 404) throw new UserError(`Calendar not found: ${args.calendarId}`);
+      if (error.code === 403) throw new UserError('Permission denied. Make sure you have write access to this calendar.');
+      throw new UserError(`Failed to create event: ${error.message || 'Unknown error'}`);
+    }
+  }
+});
+
+server.addTool({
+  name: 'updateCalendarEvent',
+  description: 'Updates an existing calendar event.',
+  parameters: UpdateEventParameters,
+  execute: async (args, { log }) => {
+    const calendar = await getCalendarClient();
+    log.info(`Updating event ${args.eventId} in calendar ${args.calendarId}`);
+
+    try {
+      // First get the existing event
+      const existingEvent = await calendar.events.get({
+        calendarId: args.calendarId,
+        eventId: args.eventId,
+      });
+
+      // Build the update object with only provided fields
+      const eventUpdate: calendar_v3.Schema$Event = {
+        ...existingEvent.data,
+      };
+
+      if (args.summary !== undefined) eventUpdate.summary = args.summary;
+      if (args.description !== undefined) eventUpdate.description = args.description;
+      if (args.location !== undefined) eventUpdate.location = args.location;
+      if (args.visibility !== undefined) eventUpdate.visibility = args.visibility;
+      if (args.colorId !== undefined) eventUpdate.colorId = args.colorId;
+      if (args.status !== undefined) eventUpdate.status = args.status;
+
+      // Update start/end times if provided
+      if (args.startDateTime) {
+        eventUpdate.start = { dateTime: args.startDateTime, timeZone: args.timeZone };
+      } else if (args.startDate) {
+        eventUpdate.start = { date: args.startDate };
+      }
+
+      if (args.endDateTime) {
+        eventUpdate.end = { dateTime: args.endDateTime, timeZone: args.timeZone };
+      } else if (args.endDate) {
+        eventUpdate.end = { date: args.endDate };
+      }
+
+      if (args.attendees !== undefined) eventUpdate.attendees = args.attendees;
+      if (args.recurrence !== undefined) eventUpdate.recurrence = args.recurrence;
+      if (args.reminders !== undefined) eventUpdate.reminders = args.reminders;
+
+      const response = await calendar.events.update({
+        calendarId: args.calendarId,
+        eventId: args.eventId,
+        requestBody: eventUpdate,
+      });
+
+      const event = response.data;
+      let result = `Successfully updated event "${event.summary}"\n`;
+      result += `Event ID: ${event.id}\n`;
+
+      if (event.htmlLink) {
+        result += `View in Calendar: ${event.htmlLink}\n`;
+      }
+
+      return result;
+    } catch (error: any) {
+      log.error(`Error updating event: ${error.message || error}`);
+      if (error.code === 404) throw new UserError(`Event or calendar not found: ${args.eventId}`);
+      if (error.code === 403) throw new UserError('Permission denied. Make sure you have write access to this calendar.');
+      throw new UserError(`Failed to update event: ${error.message || 'Unknown error'}`);
+    }
+  }
+});
+
+server.addTool({
+  name: 'deleteCalendarEvent',
+  description: 'Deletes an event from a Google Calendar.',
+  parameters: CalendarIdParameter.extend({
+    eventId: z.string().describe('The event ID to delete.'),
+  }),
+  execute: async (args, { log }) => {
+    const calendar = await getCalendarClient();
+    log.info(`Deleting event ${args.eventId} from calendar ${args.calendarId}`);
+
+    try {
+      // Get event details before deleting
+      const event = await calendar.events.get({
+        calendarId: args.calendarId,
+        eventId: args.eventId,
+      });
+
+      const eventTitle = event.data.summary || '(No title)';
+
+      await calendar.events.delete({
+        calendarId: args.calendarId,
+        eventId: args.eventId,
+      });
+
+      return `Successfully deleted event "${eventTitle}" (ID: ${args.eventId})`;
+    } catch (error: any) {
+      log.error(`Error deleting event: ${error.message || error}`);
+      if (error.code === 404) throw new UserError(`Event not found: ${args.eventId}`);
+      if (error.code === 403) throw new UserError('Permission denied. Make sure you have write access to this calendar.');
+      if (error.code === 410) throw new UserError('Event has already been deleted.');
+      throw new UserError(`Failed to delete event: ${error.message || 'Unknown error'}`);
     }
   }
 });
