@@ -1,7 +1,7 @@
 // src/server.ts
 import { FastMCP, UserError } from 'fastmcp';
 import { z } from 'zod';
-import { google, docs_v1, drive_v3 } from 'googleapis';
+import { google, docs_v1, drive_v3, chat_v1, calendar_v3 } from 'googleapis';
 import { authorize } from './auth.js';
 import { OAuth2Client } from 'google-auth-library';
 
@@ -17,17 +17,35 @@ ParagraphStyleParameters,
 ParagraphStyleArgs,
 ApplyTextStyleToolParameters, ApplyTextStyleToolArgs,
 ApplyParagraphStyleToolParameters, ApplyParagraphStyleToolArgs,
+TableCellStyleParameters,
+SpaceNameParameter,
+ListSpacesParameters,
+ListMessagesParameters,
+MessageNameParameter,
+CalendarIdParameter,
+EventIdParameter,
+ListCalendarsParameters,
+CreateEventParameters,
+UpdateEventParameters,
+ListEventsParameters,
+FreeBusyParameters,
+CreateEventArgs,
+UpdateEventArgs,
+ListEventsArgs,
 NotImplementedError
 } from './types.js';
 import * as GDocsHelpers from './googleDocsApiHelpers.js';
+import * as GChatHelpers from './googleChatApiHelpers.js';
 
 let authClient: OAuth2Client | null = null;
 let googleDocs: docs_v1.Docs | null = null;
 let googleDrive: drive_v3.Drive | null = null;
+let googleChat: chat_v1.Chat | null = null;
+let googleCalendar: calendar_v3.Calendar | null = null;
 
 // --- Initialization ---
 async function initializeGoogleClient() {
-if (googleDocs && googleDrive) return { authClient, googleDocs, googleDrive };
+if (googleDocs && googleDrive && googleChat && googleCalendar) return { authClient, googleDocs, googleDrive, googleChat, googleCalendar };
 if (!authClient) { // Check authClient instead of googleDocs to allow re-attempt
 try {
 console.error("Attempting to authorize Google API client...");
@@ -35,42 +53,45 @@ const client = await authorize();
 authClient = client; // Assign client here
 googleDocs = google.docs({ version: 'v1', auth: authClient });
 googleDrive = google.drive({ version: 'v3', auth: authClient });
+googleChat = google.chat({ version: 'v1', auth: authClient });
+googleCalendar = google.calendar({ version: 'v3', auth: authClient });
 console.error("Google API client authorized successfully.");
 } catch (error) {
 console.error("FATAL: Failed to initialize Google API client:", error);
 authClient = null; // Reset on failure
 googleDocs = null;
 googleDrive = null;
+googleChat = null;
+googleCalendar = null;
 // Decide if server should exit or just fail tools
 throw new Error("Google client initialization failed. Cannot start server tools.");
 }
 }
-// Ensure googleDocs and googleDrive are set if authClient is valid
+// Ensure googleDocs, googleDrive, googleChat, and googleCalendar are set if authClient is valid
 if (authClient && !googleDocs) {
 googleDocs = google.docs({ version: 'v1', auth: authClient });
 }
 if (authClient && !googleDrive) {
 googleDrive = google.drive({ version: 'v3', auth: authClient });
 }
-
-if (!googleDocs || !googleDrive) {
-throw new Error("Google Docs and Drive clients could not be initialized.");
+if (authClient && !googleChat) {
+googleChat = google.chat({ version: 'v1', auth: authClient });
+}
+if (authClient && !googleCalendar) {
+googleCalendar = google.calendar({ version: 'v3', auth: authClient });
 }
 
-return { authClient, googleDocs, googleDrive };
+if (!googleDocs || !googleDrive || !googleChat || !googleCalendar) {
+throw new Error("Google Docs, Drive, Chat, and Calendar clients could not be initialized.");
 }
 
-// Set up process-level unhandled error/rejection handlers to prevent crashes
-process.on('uncaughtException', (error) => {
-  console.error('Uncaught Exception:', error);
-  // Don't exit process, just log the error and continue
-  // This will catch timeout errors that might otherwise crash the server
-});
+return { authClient, googleDocs, googleDrive, googleChat, googleCalendar };
+}
 
-process.on('unhandledRejection', (reason, promise) => {
-  console.error('Unhandled Promise Rejection:', reason);
-  // Don't exit process, just log the error and continue
-});
+// SECURITY NOTE: Previously had global error handlers here that suppressed all exceptions.
+// This was dangerous as it could mask security violations and attacks.
+// Error handlers removed for fail-fast security model. Individual tool error handlers
+// provide appropriate error handling without suppressing critical failures.
 
 const server = new FastMCP({
   name: 'Ultimate Google Docs MCP Server',
@@ -95,7 +116,34 @@ throw new UserError("Google Drive client is not initialized. Authentication migh
 return drive;
 }
 
+// --- Helper to get Chat client within tools ---
+async function getChatClient() {
+const { googleChat: chat } = await initializeGoogleClient();
+if (!chat) {
+throw new UserError("Google Chat client is not initialized. Authentication might have failed during startup or lost connection.");
+}
+return chat;
+}
+
+// --- Helper to get Calendar client within tools ---
+async function getCalendarClient() {
+const { googleCalendar: calendar } = await initializeGoogleClient();
+if (!calendar) {
+throw new UserError("Google Calendar client is not initialized. Authentication might have failed during startup or lost connection.");
+}
+return calendar;
+}
+
 // === HELPER FUNCTIONS ===
+
+/**
+ * Safely escapes user input for use in Google Drive API query strings
+ * Prevents query injection attacks by escaping special characters
+ */
+function escapeDriveQuery(input: string): string {
+    // Escape backslashes first, then single quotes
+    return input.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+}
 
 /**
  * Converts Google Docs JSON structure to Markdown format
@@ -651,37 +699,330 @@ throw new UserError(`Failed to insert table: ${error.message || 'Unknown error'}
 }
 });
 
+// === TABLE MANAGEMENT TOOLS ===
+
 server.addTool({
-name: 'editTableCell',
-description: 'Edits the content and/or basic style of a specific table cell. Requires knowing table start index.',
-parameters: DocumentIdParameter.extend({
-tableStartIndex: z.number().int().min(1).describe("The starting index of the TABLE element itself (tricky to find, may require reading structure first)."),
-rowIndex: z.number().int().min(0).describe("Row index (0-based)."),
-columnIndex: z.number().int().min(0).describe("Column index (0-based)."),
-textContent: z.string().optional().describe("Optional: New text content for the cell. Replaces existing content."),
-// Combine basic styles for simplicity here. More advanced cell styling might need separate tools.
-textStyle: TextStyleParameters.optional().describe("Optional: Text styles to apply."),
-paragraphStyle: ParagraphStyleParameters.optional().describe("Optional: Paragraph styles (like alignment) to apply."),
-// cellBackgroundColor: z.string().optional()... // Cell-specific styles are complex
-}),
-execute: async (args, { log }) => {
-const docs = await getDocsClient();
-log.info(`Editing cell (${args.rowIndex}, ${args.columnIndex}) in table starting at ${args.tableStartIndex}, doc ${args.documentId}`);
+  name: 'listTables',
+  description: 'Lists all tables in a Google Document with their locations and dimensions.',
+  parameters: DocumentIdParameter,
+  execute: async (args, { log }) => {
+    const docs = await getDocsClient();
+    log.info(`Listing tables in document ${args.documentId}`);
 
-        // TODO: Implement complex logic
-        // 1. Find the cell's content range based on tableStartIndex, rowIndex, columnIndex. This is NON-TRIVIAL.
-        //    Requires getting the document, finding the table element, iterating through rows/cells to calculate indices.
-        // 2. If textContent is provided, generate a DeleteContentRange request for the cell's current content.
-        // 3. Generate an InsertText request for the new textContent at the cell's start index.
-        // 4. If textStyle is provided, generate UpdateTextStyle requests for the new text range.
-        // 5. If paragraphStyle is provided, generate UpdateParagraphStyle requests for the cell's paragraph range.
-        // 6. Execute batch update.
+    try {
+      const tables = await GDocsHelpers.findTables(docs, args.documentId);
 
-        log.error("editTableCell is not implemented due to complexity of finding cell indices.");
-        throw new NotImplementedError("Editing table cells is complex and not yet implemented.");
-        // return `Edit request for cell (${args.rowIndex}, ${args.columnIndex}) submitted (Not Implemented).`;
+      if (tables.length === 0) {
+        return 'No tables found in this document.';
+      }
+
+      let result = `Found ${tables.length} table${tables.length !== 1 ? 's' : ''} in document:\n\n`;
+
+      tables.forEach((table, index) => {
+        result += `${index + 1}. **Table at index ${table.startIndex}**\n`;
+        result += `   Dimensions: ${table.rows} rows × ${table.columns} columns\n`;
+        result += `   Range: ${table.startIndex} - ${table.endIndex}\n\n`;
+      });
+
+      result += '\n**Tip:** Use the `tableIndex` (starting index) to read, modify, or style specific tables.';
+
+      return result;
+    } catch (error: any) {
+      log.error(`Error listing tables: ${error.message || error}`);
+      if (error instanceof UserError) throw error;
+      throw new UserError(`Failed to list tables: ${error.message || 'Unknown error'}`);
     }
+  }
+});
 
+server.addTool({
+  name: 'getTable',
+  description: 'Gets the complete structure and content of a specific table, including all cell data.',
+  parameters: DocumentIdParameter.extend({
+    tableIndex: z.number().int().min(1).describe('The starting index of the table element in the document (use listTables to find this).'),
+  }),
+  execute: async (args, { log }) => {
+    const docs = await getDocsClient();
+    log.info(`Getting table structure at index ${args.tableIndex} in document ${args.documentId}`);
+
+    try {
+      const table = await GDocsHelpers.getTableStructure(docs, args.documentId, args.tableIndex);
+
+      if (!table) {
+        throw new UserError(`No table found at index ${args.tableIndex}. Use listTables to find available tables.`);
+      }
+
+      let result = `**Table at index ${table.startIndex}**\n`;
+      result += `Dimensions: ${table.rows} rows × ${table.columns} columns\n`;
+      result += `Range: ${table.startIndex} - ${table.endIndex}\n\n`;
+
+      // Display table as markdown
+      result += '**Table Content:**\n\n';
+
+      // Header row
+      result += '| ';
+      for (let col = 0; col < table.columns; col++) {
+        result += `Col ${col} | `;
+      }
+      result += '\n';
+
+      // Separator
+      result += '|';
+      for (let col = 0; col < table.columns; col++) {
+        result += ' --- |';
+      }
+      result += '\n';
+
+      // Data rows
+      table.cells.forEach((row, rowIndex) => {
+        result += '| ';
+        row.forEach(cell => {
+          const cellContent = cell.content || '';
+          const displayContent = cellContent.length > 50
+            ? cellContent.substring(0, 47) + '...'
+            : cellContent;
+          result += `${displayContent.replace(/\|/g, '\\|')} | `;
+        });
+        result += `\n`;
+      });
+
+      result += '\n**Note:** Cell indices are 0-based (row 0 is first row, column 0 is first column).';
+
+      return result;
+    } catch (error: any) {
+      log.error(`Error getting table: ${error.message || error}`);
+      if (error instanceof UserError) throw error;
+      throw new UserError(`Failed to get table: ${error.message || 'Unknown error'}`);
+    }
+  }
+});
+
+server.addTool({
+  name: 'getTableCell',
+  description: 'Gets the content and indices of a specific table cell.',
+  parameters: DocumentIdParameter.extend({
+    tableIndex: z.number().int().min(1).describe('The starting index of the table element.'),
+    rowIndex: z.number().int().min(0).describe('Row index (0-based).'),
+    columnIndex: z.number().int().min(0).describe('Column index (0-based).'),
+  }),
+  execute: async (args, { log }) => {
+    const docs = await getDocsClient();
+    log.info(`Getting cell (${args.rowIndex}, ${args.columnIndex}) from table at ${args.tableIndex}`);
+
+    try {
+      const table = await GDocsHelpers.getTableStructure(docs, args.documentId, args.tableIndex);
+
+      if (!table) {
+        throw new UserError(`No table found at index ${args.tableIndex}.`);
+      }
+
+      if (args.rowIndex >= table.rows) {
+        throw new UserError(`Row index ${args.rowIndex} out of bounds. Table has ${table.rows} rows.`);
+      }
+
+      if (args.columnIndex >= table.columns) {
+        throw new UserError(`Column index ${args.columnIndex} out of bounds. Table has ${table.columns} columns.`);
+      }
+
+      const cell = table.cells[args.rowIndex][args.columnIndex];
+
+      let result = `**Cell at row ${args.rowIndex}, column ${args.columnIndex}:**\n\n`;
+      result += `Content: ${cell.content || '(empty)'}\n`;
+      result += `Start index: ${cell.startIndex}\n`;
+      result += `End index: ${cell.endIndex}\n`;
+
+      return result;
+    } catch (error: any) {
+      log.error(`Error getting table cell: ${error.message || error}`);
+      if (error instanceof UserError) throw error;
+      throw new UserError(`Failed to get table cell: ${error.message || 'Unknown error'}`);
+    }
+  }
+});
+
+server.addTool({
+  name: 'updateTableCell',
+  description: 'Updates the text content of a specific table cell. Replaces all existing content in the cell.',
+  parameters: DocumentIdParameter.extend({
+    tableIndex: z.number().int().min(1).describe('The starting index of the table element.'),
+    rowIndex: z.number().int().min(0).describe('Row index (0-based).'),
+    columnIndex: z.number().int().min(0).describe('Column index (0-based).'),
+    newContent: z.string().describe('The new text content for the cell.'),
+  }),
+  execute: async (args, { log }) => {
+    const docs = await getDocsClient();
+    log.info(`Updating cell (${args.rowIndex}, ${args.columnIndex}) in table at ${args.tableIndex}`);
+
+    try {
+      await GDocsHelpers.updateTableCellContent(
+        docs,
+        args.documentId,
+        args.tableIndex,
+        args.rowIndex,
+        args.columnIndex,
+        args.newContent
+      );
+
+      return `Successfully updated cell at row ${args.rowIndex}, column ${args.columnIndex}.`;
+    } catch (error: any) {
+      log.error(`Error updating table cell: ${error.message || error}`);
+      if (error instanceof UserError) throw error;
+      throw new UserError(`Failed to update table cell: ${error.message || 'Unknown error'}`);
+    }
+  }
+});
+
+server.addTool({
+  name: 'applyTableCellStyle',
+  description: 'Applies styling (background color, padding, borders) to a specific table cell.',
+  parameters: DocumentIdParameter.extend({
+    tableIndex: z.number().int().min(1).describe('The starting index of the table element.'),
+    rowIndex: z.number().int().min(0).describe('Row index (0-based).'),
+    columnIndex: z.number().int().min(0).describe('Column index (0-based).'),
+    style: TableCellStyleParameters.refine(
+      styleArgs => Object.values(styleArgs).some(v => v !== undefined),
+      { message: 'At least one style option must be provided.' }
+    ).describe('The cell styling to apply.'),
+  }),
+  execute: async (args, { log }) => {
+    const docs = await getDocsClient();
+    log.info(`Applying style to cell (${args.rowIndex}, ${args.columnIndex}) in table at ${args.tableIndex}`);
+
+    try {
+      await GDocsHelpers.applyTableCellStyle(
+        docs,
+        args.documentId,
+        args.tableIndex,
+        args.rowIndex,
+        args.columnIndex,
+        args.style
+      );
+
+      return `Successfully applied styling to cell at row ${args.rowIndex}, column ${args.columnIndex}.`;
+    } catch (error: any) {
+      log.error(`Error applying table cell style: ${error.message || error}`);
+      if (error instanceof UserError) throw error;
+      throw new UserError(`Failed to apply table cell style: ${error.message || 'Unknown error'}`);
+    }
+  }
+});
+
+server.addTool({
+  name: 'insertTableRow',
+  description: 'Inserts a new row in a table above or below the specified reference row.',
+  parameters: DocumentIdParameter.extend({
+    tableIndex: z.number().int().min(1).describe('The starting index of the table element.'),
+    referenceRowIndex: z.number().int().min(0).describe('The reference row index (0-based) to insert relative to.'),
+    insertBelow: z.boolean().optional().default(true).describe('If true, inserts row below reference row. If false, inserts above.'),
+  }),
+  execute: async (args, { log }) => {
+    const docs = await getDocsClient();
+    log.info(`Inserting row ${args.insertBelow ? 'below' : 'above'} row ${args.referenceRowIndex} in table at ${args.tableIndex}`);
+
+    try {
+      await GDocsHelpers.insertTableRow(
+        docs,
+        args.documentId,
+        args.tableIndex,
+        args.insertBelow,
+        args.referenceRowIndex
+      );
+
+      const position = args.insertBelow ? 'below' : 'above';
+      return `Successfully inserted new row ${position} row ${args.referenceRowIndex}.`;
+    } catch (error: any) {
+      log.error(`Error inserting table row: ${error.message || error}`);
+      if (error instanceof UserError) throw error;
+      throw new UserError(`Failed to insert table row: ${error.message || 'Unknown error'}`);
+    }
+  }
+});
+
+server.addTool({
+  name: 'deleteTableRow',
+  description: 'Deletes a row from a table.',
+  parameters: DocumentIdParameter.extend({
+    tableIndex: z.number().int().min(1).describe('The starting index of the table element.'),
+    rowIndex: z.number().int().min(0).describe('The row index to delete (0-based).'),
+  }),
+  execute: async (args, { log }) => {
+    const docs = await getDocsClient();
+    log.info(`Deleting row ${args.rowIndex} from table at ${args.tableIndex}`);
+
+    try {
+      await GDocsHelpers.deleteTableRow(
+        docs,
+        args.documentId,
+        args.tableIndex,
+        args.rowIndex
+      );
+
+      return `Successfully deleted row ${args.rowIndex} from table.`;
+    } catch (error: any) {
+      log.error(`Error deleting table row: ${error.message || error}`);
+      if (error instanceof UserError) throw error;
+      throw new UserError(`Failed to delete table row: ${error.message || 'Unknown error'}`);
+    }
+  }
+});
+
+server.addTool({
+  name: 'insertTableColumn',
+  description: 'Inserts a new column in a table to the left or right of the specified reference column.',
+  parameters: DocumentIdParameter.extend({
+    tableIndex: z.number().int().min(1).describe('The starting index of the table element.'),
+    referenceColumnIndex: z.number().int().min(0).describe('The reference column index (0-based) to insert relative to.'),
+    insertRight: z.boolean().optional().default(true).describe('If true, inserts column to the right of reference column. If false, inserts to the left.'),
+  }),
+  execute: async (args, { log }) => {
+    const docs = await getDocsClient();
+    log.info(`Inserting column ${args.insertRight ? 'right' : 'left'} of column ${args.referenceColumnIndex} in table at ${args.tableIndex}`);
+
+    try {
+      await GDocsHelpers.insertTableColumn(
+        docs,
+        args.documentId,
+        args.tableIndex,
+        args.insertRight,
+        args.referenceColumnIndex
+      );
+
+      const position = args.insertRight ? 'to the right of' : 'to the left of';
+      return `Successfully inserted new column ${position} column ${args.referenceColumnIndex}.`;
+    } catch (error: any) {
+      log.error(`Error inserting table column: ${error.message || error}`);
+      if (error instanceof UserError) throw error;
+      throw new UserError(`Failed to insert table column: ${error.message || 'Unknown error'}`);
+    }
+  }
+});
+
+server.addTool({
+  name: 'deleteTableColumn',
+  description: 'Deletes a column from a table.',
+  parameters: DocumentIdParameter.extend({
+    tableIndex: z.number().int().min(1).describe('The starting index of the table element.'),
+    columnIndex: z.number().int().min(0).describe('The column index to delete (0-based).'),
+  }),
+  execute: async (args, { log }) => {
+    const docs = await getDocsClient();
+    log.info(`Deleting column ${args.columnIndex} from table at ${args.tableIndex}`);
+
+    try {
+      await GDocsHelpers.deleteTableColumn(
+        docs,
+        args.documentId,
+        args.tableIndex,
+        args.columnIndex
+      );
+
+      return `Successfully deleted column ${args.columnIndex} from table.`;
+    } catch (error: any) {
+      log.error(`Error deleting table column: ${error.message || error}`);
+      if (error instanceof UserError) throw error;
+      throw new UserError(`Failed to delete table column: ${error.message || 'Unknown error'}`);
+    }
+  }
 });
 
 server.addTool({
@@ -1213,7 +1554,8 @@ try {
   // Build the query string for Google Drive API
   let queryString = "mimeType='application/vnd.google-apps.document' and trashed=false";
   if (args.query) {
-    queryString += ` and (name contains '${args.query}' or fullText contains '${args.query}')`;
+    const escapedQuery = escapeDriveQuery(args.query);
+    queryString += ` and (name contains '${escapedQuery}' or fullText contains '${escapedQuery}')`;
   }
 
   const response = await drive.files.list({
@@ -1265,18 +1607,20 @@ log.info(`Searching Google Docs for: "${args.searchQuery}" in ${args.searchIn}`)
 try {
   let queryString = "mimeType='application/vnd.google-apps.document' and trashed=false";
 
-  // Add search criteria
+  // Add search criteria with proper escaping
+  const escapedQuery = escapeDriveQuery(args.searchQuery);
   if (args.searchIn === 'name') {
-    queryString += ` and name contains '${args.searchQuery}'`;
+    queryString += ` and name contains '${escapedQuery}'`;
   } else if (args.searchIn === 'content') {
-    queryString += ` and fullText contains '${args.searchQuery}'`;
+    queryString += ` and fullText contains '${escapedQuery}'`;
   } else {
-    queryString += ` and (name contains '${args.searchQuery}' or fullText contains '${args.searchQuery}')`;
+    queryString += ` and (name contains '${escapedQuery}' or fullText contains '${escapedQuery}')`;
   }
 
-  // Add date filter if provided
+  // Add date filter if provided (dates are validated by Zod, but escape anyway for safety)
   if (args.modifiedAfter) {
-    queryString += ` and modifiedTime > '${args.modifiedAfter}'`;
+    const escapedDate = escapeDriveQuery(args.modifiedAfter);
+    queryString += ` and modifiedTime > '${escapedDate}'`;
   }
 
   const response = await drive.files.list({
@@ -1915,6 +2259,585 @@ try {
 }
 });
 
+// === GOOGLE CHAT TOOLS ===
+
+server.addTool({
+  name: 'listChatSpaces',
+  description: 'Lists Google Chat spaces (rooms and DMs) that the authenticated user has access to.',
+  parameters: z.object({
+    pageSize: z.number().int().min(1).max(100).optional().default(50).describe('Maximum number of spaces to return (1-100).'),
+    pageToken: z.string().optional().describe('Token for pagination. Use the nextPageToken from a previous response to get the next page.'),
+    filter: z.string().optional().describe('Optional filter string (e.g., "spaceType = SPACE" for rooms only or "spaceType = DIRECT_MESSAGE" for DMs only).'),
+  }),
+  execute: async (args, { log }) => {
+    const chat = await getChatClient();
+    log.info(`Listing Chat spaces. PageSize: ${args.pageSize}, Filter: ${args.filter || 'none'}`);
+
+    try {
+      const result = await GChatHelpers.listSpaces(chat, args.pageSize, args.pageToken, args.filter);
+      const spaces = result.spaces;
+
+      if (spaces.length === 0) {
+        return "No Chat spaces found. You may not have access to any spaces or they don't match the filter criteria.";
+      }
+
+      let output = `Found ${spaces.length} Google Chat space${spaces.length !== 1 ? 's' : ''}:\n\n`;
+
+      spaces.forEach((space, index) => {
+        output += `${index + 1}. ${GChatHelpers.formatSpaceDetails(space)}\n`;
+      });
+
+      if (result.nextPageToken) {
+        output += `\n**More results available.** Use pageToken="${result.nextPageToken}" to get the next page.`;
+      }
+
+      return output;
+    } catch (error: any) {
+      log.error(`Error listing Chat spaces: ${error.message || error}`);
+      if (error instanceof UserError) throw error;
+      throw new UserError(`Failed to list Chat spaces: ${error.message || 'Unknown error'}`);
+    }
+  }
+});
+
+server.addTool({
+  name: 'getChatSpace',
+  description: 'Gets detailed information about a specific Google Chat space (room or DM).',
+  parameters: z.object({
+    spaceName: z.string().describe('The resource name of the space (e.g., "spaces/SPACE_ID"). You can get this from listChatSpaces.'),
+  }),
+  execute: async (args, { log }) => {
+    const chat = await getChatClient();
+    log.info(`Getting Chat space details: ${args.spaceName}`);
+
+    try {
+      // Validate space name format
+      if (!GChatHelpers.validateSpaceName(args.spaceName)) {
+        throw new UserError(`Invalid space name format: ${args.spaceName}. Expected format: "spaces/SPACE_ID"`);
+      }
+
+      const space = await GChatHelpers.getSpace(chat, args.spaceName);
+
+      let output = '**Google Chat Space Details:**\n\n';
+      output += GChatHelpers.formatSpaceDetails(space);
+
+      // Add additional details
+      if (space.spaceDetails?.description) {
+        output += `\n**Description:** ${space.spaceDetails.description}`;
+      }
+
+      if (space.spaceDetails?.guidelines) {
+        output += `\n**Guidelines:** ${space.spaceDetails.guidelines}`;
+      }
+
+      return output;
+    } catch (error: any) {
+      log.error(`Error getting Chat space: ${error.message || error}`);
+      if (error instanceof UserError) throw error;
+      throw new UserError(`Failed to get Chat space: ${error.message || 'Unknown error'}`);
+    }
+  }
+});
+
+server.addTool({
+  name: 'listChatMessages',
+  description: 'Lists messages from a specific Google Chat space. Returns recent messages with sender information and content.',
+  parameters: z.object({
+    spaceName: z.string().describe('The resource name of the space (e.g., "spaces/SPACE_ID"). Get this from listChatSpaces.'),
+    pageSize: z.number().int().min(1).max(100).optional().default(25).describe('Maximum number of messages to return (1-100).'),
+    pageToken: z.string().optional().describe('Token for pagination. Use the nextPageToken from a previous response.'),
+    orderBy: z.string().optional().describe('Ordering of messages. Use "createTime desc" for newest first (default) or "createTime asc" for oldest first.'),
+    filter: z.string().optional().describe('Optional filter string for messages.'),
+  }),
+  execute: async (args, { log }) => {
+    const chat = await getChatClient();
+    log.info(`Listing messages in Chat space: ${args.spaceName}`);
+
+    try {
+      // Validate space name format
+      if (!GChatHelpers.validateSpaceName(args.spaceName)) {
+        throw new UserError(`Invalid space name format: ${args.spaceName}. Expected format: "spaces/SPACE_ID"`);
+      }
+
+      const result = await GChatHelpers.listMessages(
+        chat,
+        args.spaceName,
+        args.pageSize,
+        args.pageToken,
+        args.orderBy,
+        args.filter
+      );
+
+      const messages = result.messages;
+
+      if (messages.length === 0) {
+        return `No messages found in space ${args.spaceName}. The space may be empty or you may not have permission to read messages.`;
+      }
+
+      let output = `Found ${messages.length} message${messages.length !== 1 ? 's' : ''} in space:\n\n`;
+
+      messages.forEach((message, index) => {
+        output += `${index + 1}. ${GChatHelpers.formatMessageDetails(message)}\n`;
+      });
+
+      if (result.nextPageToken) {
+        output += `\n**More messages available.** Use pageToken="${result.nextPageToken}" to get the next page.`;
+      }
+
+      return output;
+    } catch (error: any) {
+      log.error(`Error listing Chat messages: ${error.message || error}`);
+      if (error instanceof UserError) throw error;
+      throw new UserError(`Failed to list Chat messages: ${error.message || 'Unknown error'}`);
+    }
+  }
+});
+
+server.addTool({
+  name: 'getChatMessage',
+  description: 'Gets the full details of a specific message from Google Chat, including complete text content and metadata.',
+  parameters: z.object({
+    messageName: z.string().describe('The resource name of the message (e.g., "spaces/SPACE_ID/messages/MESSAGE_ID"). Get this from listChatMessages.'),
+  }),
+  execute: async (args, { log }) => {
+    const chat = await getChatClient();
+    log.info(`Getting Chat message: ${args.messageName}`);
+
+    try {
+      // Validate message name format
+      if (!GChatHelpers.validateMessageName(args.messageName)) {
+        throw new UserError(`Invalid message name format: ${args.messageName}. Expected format: "spaces/SPACE_ID/messages/MESSAGE_ID"`);
+      }
+
+      const message = await GChatHelpers.getMessage(chat, args.messageName);
+
+      let output = '**Google Chat Message Details:**\n\n';
+      output += GChatHelpers.formatMessageDetails(message);
+
+      // Add full text content
+      const fullText = GChatHelpers.extractMessageText(message);
+      if (fullText !== '[No text content]') {
+        output += `\n**Full Text Content:**\n${fullText}\n`;
+      }
+
+      // Add attachment details if present
+      if (message.attachment && message.attachment.length > 0) {
+        output += `\n**Attachments:**\n`;
+        message.attachment.forEach((attachment, index) => {
+          output += `${index + 1}. ${attachment.name || 'Unnamed attachment'}\n`;
+          if (attachment.contentType) {
+            output += `   Type: ${attachment.contentType}\n`;
+          }
+          if (attachment.source) {
+            output += `   Source: ${attachment.source}\n`;
+          }
+        });
+      }
+
+      return output;
+    } catch (error: any) {
+      log.error(`Error getting Chat message: ${error.message || error}`);
+      if (error instanceof UserError) throw error;
+      throw new UserError(`Failed to get Chat message: ${error.message || 'Unknown error'}`);
+    }
+  }
+});
+
+// === GOOGLE CALENDAR TOOLS ===
+
+server.addTool({
+  name: 'listCalendars',
+  description: 'Lists calendars accessible to the authenticated user.',
+  parameters: ListCalendarsParameters,
+  execute: async (args, { log }) => {
+    const calendar = await getCalendarClient();
+    log.info(`Listing calendars. Min access role: ${args.minAccessRole || 'none'}`);
+
+    try {
+      const response = await calendar.calendarList.list({
+        minAccessRole: args.minAccessRole,
+        showHidden: args.showHidden,
+        maxResults: args.maxResults,
+        pageToken: args.pageToken,
+      });
+
+      const calendars = response.data.items || [];
+
+      if (calendars.length === 0) {
+        return 'No calendars found or accessible.';
+      }
+
+      let result = `Found ${calendars.length} calendar${calendars.length !== 1 ? 's' : ''}:\n\n`;
+
+      calendars.forEach((cal, index) => {
+        result += `${index + 1}. **${cal.summary}**\n`;
+        result += `   ID: ${cal.id}\n`;
+        result += `   Access Role: ${cal.accessRole}\n`;
+        result += `   Time Zone: ${cal.timeZone || 'Unknown'}\n`;
+        if (cal.description) {
+          result += `   Description: ${cal.description}\n`;
+        }
+        if (cal.primary) {
+          result += `   **Primary Calendar**\n`;
+        }
+        result += '\n';
+      });
+
+      if (response.data.nextPageToken) {
+        result += `\n**More results available.** Use pageToken="${response.data.nextPageToken}" to get the next page.`;
+      }
+
+      return result;
+    } catch (error: any) {
+      log.error(`Error listing calendars: ${error.message || error}`);
+      if (error.code === 403) throw new UserError('Permission denied. Make sure you have granted Google Calendar access.');
+      throw new UserError(`Failed to list calendars: ${error.message || 'Unknown error'}`);
+    }
+  }
+});
+
+server.addTool({
+  name: 'listCalendarEvents',
+  description: 'Lists events from a specific calendar within a time range.',
+  parameters: ListEventsParameters,
+  execute: async (args, { log }) => {
+    const calendar = await getCalendarClient();
+    log.info(`Listing events from calendar: ${args.calendarId}`);
+
+    try {
+      const response = await calendar.events.list({
+        calendarId: args.calendarId,
+        timeMin: args.timeMin,
+        timeMax: args.timeMax,
+        maxResults: args.maxResults,
+        pageToken: args.pageToken,
+        orderBy: args.orderBy,
+        singleEvents: args.singleEvents,
+        showDeleted: args.showDeleted,
+        q: args.q,
+      });
+
+      const events = response.data.items || [];
+
+      if (events.length === 0) {
+        return `No events found in calendar ${args.calendarId} for the specified time range.`;
+      }
+
+      let result = `Found ${events.length} event${events.length !== 1 ? 's' : ''}:\n\n`;
+
+      events.forEach((event, index) => {
+        result += `${index + 1}. **${event.summary || '(No title)'}**\n`;
+        result += `   Event ID: ${event.id}\n`;
+
+        if (event.start?.dateTime) {
+          const startTime = new Date(event.start.dateTime).toLocaleString();
+          const endTime = event.end?.dateTime ? new Date(event.end.dateTime).toLocaleString() : 'Unknown';
+          result += `   Time: ${startTime} - ${endTime}\n`;
+        } else if (event.start?.date) {
+          result += `   Date: ${event.start.date}${event.end?.date ? ` to ${event.end.date}` : ''} (All-day)\n`;
+        }
+
+        if (event.location) {
+          result += `   Location: ${event.location}\n`;
+        }
+
+        if (event.description) {
+          const desc = event.description.length > 100 ? event.description.substring(0, 100) + '...' : event.description;
+          result += `   Description: ${desc}\n`;
+        }
+
+        if (event.attendees && event.attendees.length > 0) {
+          result += `   Attendees: ${event.attendees.length}\n`;
+        }
+
+        if (event.hangoutLink) {
+          result += `   Meeting Link: ${event.hangoutLink}\n`;
+        }
+
+        if (event.htmlLink) {
+          result += `   View in Calendar: ${event.htmlLink}\n`;
+        }
+
+        result += '\n';
+      });
+
+      if (response.data.nextPageToken) {
+        result += `\n**More events available.** Use pageToken="${response.data.nextPageToken}" to get the next page.`;
+      }
+
+      return result;
+    } catch (error: any) {
+      log.error(`Error listing events: ${error.message || error}`);
+      if (error.code === 404) throw new UserError(`Calendar not found: ${args.calendarId}`);
+      if (error.code === 403) throw new UserError('Permission denied. Make sure you have access to this calendar.');
+      throw new UserError(`Failed to list events: ${error.message || 'Unknown error'}`);
+    }
+  }
+});
+
+server.addTool({
+  name: 'getCalendarEvent',
+  description: 'Gets detailed information about a specific calendar event.',
+  parameters: CalendarIdParameter.extend({
+    eventId: z.string().describe('The event ID.'),
+  }),
+  execute: async (args, { log }) => {
+    const calendar = await getCalendarClient();
+    log.info(`Getting event ${args.eventId} from calendar ${args.calendarId}`);
+
+    try {
+      const response = await calendar.events.get({
+        calendarId: args.calendarId,
+        eventId: args.eventId,
+      });
+
+      const event = response.data;
+
+      let result = `**Event Details:**\n\n`;
+      result += `**Title:** ${event.summary || '(No title)'}\n`;
+      result += `**Event ID:** ${event.id}\n`;
+      result += `**Status:** ${event.status}\n`;
+
+      if (event.start?.dateTime) {
+        const startTime = new Date(event.start.dateTime).toLocaleString();
+        const endTime = event.end?.dateTime ? new Date(event.end.dateTime).toLocaleString() : 'Unknown';
+        result += `**Time:** ${startTime} - ${endTime}\n`;
+        result += `**Time Zone:** ${event.start.timeZone || 'Default'}\n`;
+      } else if (event.start?.date) {
+        result += `**Date:** ${event.start.date}${event.end?.date ? ` to ${event.end.date}` : ''} (All-day event)\n`;
+      }
+
+      if (event.location) {
+        result += `**Location:** ${event.location}\n`;
+      }
+
+      if (event.description) {
+        result += `**Description:**\n${event.description}\n\n`;
+      }
+
+      if (event.attendees && event.attendees.length > 0) {
+        result += `**Attendees:**\n`;
+        event.attendees.forEach(attendee => {
+          const status = attendee.responseStatus || 'needsAction';
+          const optional = attendee.optional ? ' (optional)' : '';
+          result += `  - ${attendee.email}${optional}: ${status}\n`;
+        });
+        result += '\n';
+      }
+
+      if (event.recurrence && event.recurrence.length > 0) {
+        result += `**Recurrence:**\n`;
+        event.recurrence.forEach(rule => {
+          result += `  ${rule}\n`;
+        });
+        result += '\n';
+      }
+
+      if (event.hangoutLink) {
+        result += `**Meeting Link:** ${event.hangoutLink}\n`;
+      }
+
+      if (event.conferenceData?.entryPoints) {
+        result += `**Conference Info:**\n`;
+        event.conferenceData.entryPoints.forEach(entry => {
+          result += `  ${entry.entryPointType}: ${entry.uri || entry.label}\n`;
+        });
+        result += '\n';
+      }
+
+      if (event.htmlLink) {
+        result += `**View in Calendar:** ${event.htmlLink}\n`;
+      }
+
+      if (event.creator) {
+        result += `**Created by:** ${event.creator.email}\n`;
+      }
+
+      if (event.created) {
+        result += `**Created:** ${new Date(event.created).toLocaleString()}\n`;
+      }
+
+      if (event.updated) {
+        result += `**Last Updated:** ${new Date(event.updated).toLocaleString()}\n`;
+      }
+
+      return result;
+    } catch (error: any) {
+      log.error(`Error getting event: ${error.message || error}`);
+      if (error.code === 404) throw new UserError(`Event not found: ${args.eventId}`);
+      if (error.code === 403) throw new UserError('Permission denied. Make sure you have access to this calendar.');
+      throw new UserError(`Failed to get event: ${error.message || 'Unknown error'}`);
+    }
+  }
+});
+
+server.addTool({
+  name: 'createCalendarEvent',
+  description: 'Creates a new event in a Google Calendar.',
+  parameters: CreateEventParameters,
+  execute: async (args, { log }) => {
+    const calendar = await getCalendarClient();
+    log.info(`Creating event "${args.summary}" in calendar ${args.calendarId}`);
+
+    try {
+      // Validate that we have either dateTime or date for start/end
+      if (!args.startDateTime && !args.startDate) {
+        throw new UserError('Must provide either startDateTime (for timed events) or startDate (for all-day events).');
+      }
+
+      if (!args.endDateTime && !args.endDate) {
+        throw new UserError('Must provide either endDateTime (for timed events) or endDate (for all-day events).');
+      }
+
+      const eventResource: calendar_v3.Schema$Event = {
+        summary: args.summary,
+        description: args.description,
+        location: args.location,
+        start: args.startDateTime
+          ? { dateTime: args.startDateTime, timeZone: args.timeZone }
+          : { date: args.startDate },
+        end: args.endDateTime
+          ? { dateTime: args.endDateTime, timeZone: args.timeZone }
+          : { date: args.endDate },
+        attendees: args.attendees,
+        recurrence: args.recurrence,
+        reminders: args.reminders,
+        conferenceData: args.conferenceData,
+        visibility: args.visibility,
+        colorId: args.colorId,
+      };
+
+      const response = await calendar.events.insert({
+        calendarId: args.calendarId,
+        requestBody: eventResource,
+        conferenceDataVersion: args.conferenceData ? 1 : undefined,
+      });
+
+      const event = response.data;
+      let result = `Successfully created event "${event.summary}"\n`;
+      result += `Event ID: ${event.id}\n`;
+
+      if (event.htmlLink) {
+        result += `View in Calendar: ${event.htmlLink}\n`;
+      }
+
+      if (event.hangoutLink) {
+        result += `Meeting Link: ${event.hangoutLink}\n`;
+      }
+
+      return result;
+    } catch (error: any) {
+      log.error(`Error creating event: ${error.message || error}`);
+      if (error.code === 404) throw new UserError(`Calendar not found: ${args.calendarId}`);
+      if (error.code === 403) throw new UserError('Permission denied. Make sure you have write access to this calendar.');
+      throw new UserError(`Failed to create event: ${error.message || 'Unknown error'}`);
+    }
+  }
+});
+
+server.addTool({
+  name: 'updateCalendarEvent',
+  description: 'Updates an existing calendar event.',
+  parameters: UpdateEventParameters,
+  execute: async (args, { log }) => {
+    const calendar = await getCalendarClient();
+    log.info(`Updating event ${args.eventId} in calendar ${args.calendarId}`);
+
+    try {
+      // First get the existing event
+      const existingEvent = await calendar.events.get({
+        calendarId: args.calendarId,
+        eventId: args.eventId,
+      });
+
+      // Build the update object with only provided fields
+      const eventUpdate: calendar_v3.Schema$Event = {
+        ...existingEvent.data,
+      };
+
+      if (args.summary !== undefined) eventUpdate.summary = args.summary;
+      if (args.description !== undefined) eventUpdate.description = args.description;
+      if (args.location !== undefined) eventUpdate.location = args.location;
+      if (args.visibility !== undefined) eventUpdate.visibility = args.visibility;
+      if (args.colorId !== undefined) eventUpdate.colorId = args.colorId;
+      if (args.status !== undefined) eventUpdate.status = args.status;
+
+      // Update start/end times if provided
+      if (args.startDateTime) {
+        eventUpdate.start = { dateTime: args.startDateTime, timeZone: args.timeZone };
+      } else if (args.startDate) {
+        eventUpdate.start = { date: args.startDate };
+      }
+
+      if (args.endDateTime) {
+        eventUpdate.end = { dateTime: args.endDateTime, timeZone: args.timeZone };
+      } else if (args.endDate) {
+        eventUpdate.end = { date: args.endDate };
+      }
+
+      if (args.attendees !== undefined) eventUpdate.attendees = args.attendees;
+      if (args.recurrence !== undefined) eventUpdate.recurrence = args.recurrence;
+      if (args.reminders !== undefined) eventUpdate.reminders = args.reminders;
+
+      const response = await calendar.events.update({
+        calendarId: args.calendarId,
+        eventId: args.eventId,
+        requestBody: eventUpdate,
+      });
+
+      const event = response.data;
+      let result = `Successfully updated event "${event.summary}"\n`;
+      result += `Event ID: ${event.id}\n`;
+
+      if (event.htmlLink) {
+        result += `View in Calendar: ${event.htmlLink}\n`;
+      }
+
+      return result;
+    } catch (error: any) {
+      log.error(`Error updating event: ${error.message || error}`);
+      if (error.code === 404) throw new UserError(`Event or calendar not found: ${args.eventId}`);
+      if (error.code === 403) throw new UserError('Permission denied. Make sure you have write access to this calendar.');
+      throw new UserError(`Failed to update event: ${error.message || 'Unknown error'}`);
+    }
+  }
+});
+
+server.addTool({
+  name: 'deleteCalendarEvent',
+  description: 'Deletes an event from a Google Calendar.',
+  parameters: CalendarIdParameter.extend({
+    eventId: z.string().describe('The event ID to delete.'),
+  }),
+  execute: async (args, { log }) => {
+    const calendar = await getCalendarClient();
+    log.info(`Deleting event ${args.eventId} from calendar ${args.calendarId}`);
+
+    try {
+      // Get event details before deleting
+      const event = await calendar.events.get({
+        calendarId: args.calendarId,
+        eventId: args.eventId,
+      });
+
+      const eventTitle = event.data.summary || '(No title)';
+
+      await calendar.events.delete({
+        calendarId: args.calendarId,
+        eventId: args.eventId,
+      });
+
+      return `Successfully deleted event "${eventTitle}" (ID: ${args.eventId})`;
+    } catch (error: any) {
+      log.error(`Error deleting event: ${error.message || error}`);
+      if (error.code === 404) throw new UserError(`Event not found: ${args.eventId}`);
+      if (error.code === 403) throw new UserError('Permission denied. Make sure you have write access to this calendar.');
+      if (error.code === 410) throw new UserError('Event has already been deleted.');
+      throw new UserError(`Failed to delete event: ${error.message || 'Unknown error'}`);
+    }
+  }
+});
+
 // --- Server Startup ---
 async function startServer() {
 try {
@@ -1929,9 +2852,6 @@ console.error("Starting Ultimate Google Docs MCP server...");
       // Start the server with proper error handling
       server.start(configToUse);
       console.error(`MCP Server running using ${configToUse.transportType}. Awaiting client connection...`);
-
-      // Log that error handling has been enabled
-      console.error('Process-level error handling configured to prevent crashes from timeout errors.');
 
 } catch(startError: any) {
 console.error("FATAL: Server failed to start:", startError.message || startError);
