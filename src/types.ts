@@ -297,6 +297,75 @@ export type CreateEventArgs = z.infer<typeof CreateEventParameters>;
 export type UpdateEventArgs = z.infer<typeof UpdateEventParameters>;
 export type ListEventsArgs = z.infer<typeof ListEventsParameters>;
 
+// --- Gmail Parameter Schemas ---
+
+export const GmailMessageIdParameter = z.object({
+  messageId: z.string().describe('The ID of the Gmail message.'),
+});
+
+export const ListEmailsParameters = z.object({
+  maxResults: z.number().int().min(1).max(500).optional().default(50).describe('Maximum number of emails to return (1-500).'),
+  pageToken: z.string().optional().describe('Token for pagination. Use the nextPageToken from a previous response.'),
+  labelIds: z.array(z.string()).optional().describe('Only return messages with labels matching all of the specified label IDs (e.g., ["INBOX", "UNREAD"]).'),
+  query: z.string().optional().describe('Gmail search query (e.g., "from:user@example.com is:unread", "subject:important after:2024/01/01"). Uses Gmail search syntax.'),
+  includeSpamTrash: z.boolean().optional().default(false).describe('Include messages from SPAM and TRASH in the results.'),
+});
+
+export const GetEmailParameters = GmailMessageIdParameter.extend({
+  format: z.enum(['full', 'metadata', 'minimal', 'raw']).optional().default('full').describe('Format of the email message. "full" returns full message with body, "metadata" returns headers only, "minimal" returns basic info, "raw" returns raw MIME.'),
+});
+
+export const SearchEmailsParameters = z.object({
+  query: z.string().min(1).describe('Gmail search query string (e.g., "from:user@example.com subject:report", "is:unread has:attachment", "after:2024/01/01 before:2024/12/31").'),
+  maxResults: z.number().int().min(1).max(500).optional().default(50).describe('Maximum number of emails to return (1-500).'),
+  pageToken: z.string().optional().describe('Token for pagination.'),
+});
+
+export const ArchiveEmailParameters = z.object({
+  messageIds: z.array(z.string()).min(1).describe('Array of Gmail message IDs to archive. Archiving removes the INBOX label.'),
+});
+
+export const ModifyEmailLabelsParameters = z.object({
+  messageIds: z.array(z.string()).min(1).describe('Array of Gmail message IDs to modify.'),
+  addLabelIds: z.array(z.string()).optional().describe('Label IDs to add to the messages (e.g., ["STARRED", "IMPORTANT"]).'),
+  removeLabelIds: z.array(z.string()).optional().describe('Label IDs to remove from the messages (e.g., ["UNREAD", "INBOX"]).'),
+}).refine(data => data.addLabelIds || data.removeLabelIds, {
+  message: "At least one of addLabelIds or removeLabelIds must be provided.",
+});
+
+export const MarkEmailParameters = z.object({
+  messageIds: z.array(z.string()).min(1).describe('Array of Gmail message IDs to modify.'),
+  markAs: z.enum(['read', 'unread', 'starred', 'unstarred', 'important', 'not_important']).describe('How to mark the emails.'),
+});
+
+export const ListLabelsParameters = z.object({
+  // No parameters needed - lists all labels for the user
+});
+
+export const CreateLabelParameters = z.object({
+  name: z.string().min(1).describe('Name for the new label.'),
+  labelListVisibility: z.enum(['labelShow', 'labelShowIfUnread', 'labelHide']).optional().default('labelShow').describe('Visibility of the label in the label list.'),
+  messageListVisibility: z.enum(['show', 'hide']).optional().default('show').describe('Visibility of messages with this label in the message list.'),
+});
+
+export const DeleteLabelParameters = z.object({
+  labelId: z.string().describe('ID of the label to delete (not the label name).'),
+});
+
+export const BatchGetEmailsParameters = z.object({
+  messageIds: z.array(z.string()).min(1).max(100).describe('Array of Gmail message IDs to retrieve (max 100 at once).'),
+  format: z.enum(['full', 'metadata', 'minimal']).optional().default('metadata').describe('Format of the email messages.'),
+});
+
+export type ListEmailsArgs = z.infer<typeof ListEmailsParameters>;
+export type GetEmailArgs = z.infer<typeof GetEmailParameters>;
+export type SearchEmailsArgs = z.infer<typeof SearchEmailsParameters>;
+export type ArchiveEmailArgs = z.infer<typeof ArchiveEmailParameters>;
+export type ModifyEmailLabelsArgs = z.infer<typeof ModifyEmailLabelsParameters>;
+export type MarkEmailArgs = z.infer<typeof MarkEmailParameters>;
+export type CreateLabelArgs = z.infer<typeof CreateLabelParameters>;
+export type BatchGetEmailsArgs = z.infer<typeof BatchGetEmailsParameters>;
+
 // --- Error Class ---
 // Use FastMCP's UserError for client-facing issues
 // Define a custom error for internal issues if needed
