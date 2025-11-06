@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-This is a comprehensive MCP (Model Context Protocol) server that provides programmatic access to Google Docs and Google Drive through 30+ tools. It uses FastMCP, TypeScript, and the Google APIs client library to enable AI assistants to read, write, format, and manage Google Documents and Drive files.
+This is a comprehensive MCP (Model Context Protocol) server that provides programmatic access to Google Docs, Google Drive, Google Chat, Google Calendar, and Gmail through 50+ tools. It uses FastMCP, TypeScript, and the Google APIs client library to enable AI assistants to read, write, format, and manage Google Documents, Drive files, emails, calendar events, and more.
 
 ## Development Commands
 
@@ -39,7 +39,13 @@ Note: The server is typically run by Claude Desktop via stdio transport, not man
 - Manages OAuth2 flow with Google APIs
 - Loads credentials from `credentials.json`
 - Persists tokens to `token.json`
-- Required scopes: `documents`, `drive`
+- Required scopes: `documents`, `drive`, `gmail`, `calendar`, `chat`
+
+**src/gmailHelpers.ts** - Helper functions for Gmail operations
+- `stripHtmlTags()` - Converts HTML email bodies to plain text
+- `formatEmailForDisplay()` - Formats email objects for readable output
+- `buildBatchModifyRequest()` - Constructs batch modify requests
+- Batch operation support for efficient bulk email operations
 
 **src/types.ts** - Type definitions and validation schemas
 - Zod schemas for parameter validation
@@ -56,7 +62,7 @@ Note: The server is typically run by Claude Desktop via stdio transport, not man
 - Image upload and insertion helpers
 - Table and structure manipulation helpers
 
-### Tool Categories (40+ Tools)
+### Tool Categories (50+ Tools)
 
 1. **Document Access & Editing** (4 tools)
    - readGoogleDoc, appendToGoogleDoc, insertText, deleteRange
@@ -85,8 +91,17 @@ Note: The server is typically run by Claude Desktop via stdio transport, not man
 7. **Google Chat Integration** (4 tools)
    - listChatSpaces, getChatSpace, listChatMessages, getChatMessage
 
-8. **Experimental/Stub Tools** (2 tools)
-   - fixListFormatting, findElement (not implemented)
+8. **Google Calendar Integration** (6 tools)
+   - listCalendars, listCalendarEvents, getCalendarEvent
+   - createCalendarEvent, updateCalendarEvent, deleteCalendarEvent
+
+9. **Gmail Integration** (11 tools)
+   - Email Discovery: listEmails, searchEmails, getEmail
+   - Email Actions: archiveEmail, markEmail, modifyEmailLabels
+   - Label Management: listLabels, createLabel, deleteLabel
+
+10. **Experimental/Stub Tools** (2 tools)
+    - fixListFormatting, findElement (not implemented)
 
 ### Key Design Patterns
 
@@ -172,6 +187,14 @@ Note: The server is typically run by Claude Desktop via stdio transport, not man
 - **Styling Scope**: Cell styles apply to individual cells; use tableRange with rowSpan=1, columnSpan=1
 - **Border Styles**: Supports SOLID, DOTTED, DASHED; each border (top/bottom/left/right) styled independently
 - **Padding**: Specified in points (PT) for all four sides independently
+
+### Gmail Integration
+- **Email Discovery**: `listEmails()` and `searchEmails()` support Gmail query syntax
+- **Batch Operations**: Up to 1000 emails can be modified in a single operation
+- **Format Options**: Emails can be retrieved in full, metadata, minimal, or raw formats
+- **HTML Conversion**: Email bodies are automatically converted from HTML to plain text
+- **Label System**: Support for both system labels (INBOX, SENT, etc.) and custom user labels
+- **Efficient Queries**: Uses Gmail API's built-in search with pagination support
 
 ## Common Development Patterns
 

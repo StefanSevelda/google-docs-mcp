@@ -1,15 +1,16 @@
-# Google Docs, Drive, Chat & Calendar MCP Server
+# Google Docs, Drive, Chat, Calendar & Gmail MCP Server
 
 ![Demo Animation](assets/google.docs.mcp.1.gif)
 
-Connect Claude Desktop, Claude Code, or other MCP clients to your Google Docs, Google Drive, Google Chat, and Google Calendar!
+Connect Claude Desktop, Claude Code, or other MCP clients to your Google Docs, Google Drive, Google Chat, Google Calendar, and Gmail!
 
 > 🔥 **Check out [15 powerful tasks](SAMPLE_TASKS.md) you can accomplish with this server!**
 > 📁 **NEW:** Complete Google Drive file management capabilities!
 > 💬 **NEW:** Google Chat integration - read and analyze your team conversations!
 > 📅 **NEW:** Google Calendar integration - manage your schedule and events!
+> 📧 **NEW:** Gmail integration - manage your emails and labels programmatically!
 
-A comprehensive MCP server providing 40+ tools for reading, writing, formatting Google Documents, managing Drive files, handling comments, reading Google Chat messages, and managing your Google Calendar—all through natural language commands.
+A comprehensive MCP server providing 50+ tools for reading, writing, formatting Google Documents, managing Drive files, handling comments, reading Google Chat messages, managing your Google Calendar, and organizing your Gmail inbox—all through natural language commands.
 
 ## Key Features
 
@@ -18,6 +19,7 @@ A comprehensive MCP server providing 40+ tools for reading, writing, formatting 
 **Comments:** List, add, reply, resolve, and delete document comments
 **Chat:** Read spaces and messages from Google Chat (read-only)
 **Calendar:** List calendars, manage events, view schedules
+**Gmail:** List, search, read emails, manage labels, archive, mark as read/unread
 **Authentication:** Secure OAuth 2.0 with Google APIs
 
 **Full feature list:** [SAMPLE_TASKS.md](SAMPLE_TASKS.md) | **Architecture:** [CLAUDE.md](CLAUDE.md)
@@ -82,7 +84,7 @@ Create OAuth credentials to access Google APIs:
 
 1. Go to [Google Cloud Console](https://console.cloud.google.com/)
 2. Create/select a project
-3. Enable **Google Docs API**, **Google Drive API**, **Google Chat API**, and **Google Calendar API**
+3. Enable **Google Docs API**, **Google Drive API**, **Google Chat API**, **Google Calendar API**, and **Gmail API**
 4. Configure OAuth Consent Screen:
    - User Type: **External**
    - Add scopes:
@@ -91,6 +93,7 @@ Create OAuth credentials to access Google APIs:
      - `https://www.googleapis.com/auth/chat.spaces.readonly` (Chat spaces - optional)
      - `https://www.googleapis.com/auth/chat.messages.readonly` (Chat messages - optional)
      - `https://www.googleapis.com/auth/calendar` (Calendar access - optional)
+     - `https://www.googleapis.com/auth/gmail.modify` (Gmail access - optional)
    - Add yourself as Test User
 5. Create Credentials → OAuth client ID → **Desktop app**
 6. Download JSON → Rename to `credentials.json`
@@ -243,6 +246,14 @@ Claude Code will automatically launch the MCP server when needed.
 "Show me events for this week"
 "Create a meeting titled 'Team Sync' tomorrow at 2pm"
 "What's on my calendar for next Monday?"
+```
+
+**Gmail:**
+```
+"List my unread emails"
+"Search for emails from john@example.com containing 'report'"
+"Archive all emails with label 'newsletter'"
+"Mark all emails from last week as read"
 ```
 
 See [SAMPLE_TASKS.md](SAMPLE_TASKS.md) for more detailed examples.
@@ -598,6 +609,238 @@ Here are practical examples of how to use Calendar integration with Claude:
 - Be mindful when sharing calendar information
 - The `token.json` file contains access to your calendar - protect it carefully
 - Consider the sensitivity of your meeting information before using this integration
+
+---
+
+## Gmail Integration
+
+Manage your Gmail inbox, search emails, organize with labels, and perform bulk operations—all through natural language commands.
+
+### Prerequisites for Gmail
+
+The Gmail scope is already included in the `auth.ts` file:
+- `https://www.googleapis.com/auth/gmail.modify` - Full access to manage emails (read, archive, label, delete)
+
+**Important:** If you've already authorized the server, you'll need to re-authorize to grant Gmail permissions:
+
+1. **Delete the existing token:**
+   ```bash
+   rm token.json
+   ```
+
+2. **Re-run the authorization process:**
+   ```bash
+   node ./dist/server.js
+   ```
+
+3. **Grant permissions:** When the authorization screen appears, you'll now see requests for Gmail permissions. Click "Allow" to grant all permissions.
+
+### Available Gmail Tools
+
+#### 1. List Emails (`listEmails`)
+
+Lists emails from your inbox with optional filtering.
+
+**Parameters:**
+- `maxResults` (optional): Maximum emails to return (1-500, default: 50)
+- `query` (optional): Gmail search query (e.g., "is:unread", "from:john@example.com")
+- `labelIds` (optional): Filter by label IDs (e.g., ["INBOX", "UNREAD"])
+- `includeSpamTrash` (optional): Include spam/trash (default: false)
+- `pageToken` (optional): Token for pagination
+
+**Example prompts:**
+- "List my recent emails"
+- "Show me unread emails"
+- "List emails in my inbox from this week"
+
+**Returns:** List of emails with subjects, senders, dates, snippets, and labels.
+
+#### 2. Search Emails (`searchEmails`)
+
+Searches emails using Gmail's powerful search syntax.
+
+**Parameters:**
+- `query` (required): Gmail search query
+- `maxResults` (optional): Maximum emails to return (1-500, default: 50)
+- `pageToken` (optional): Token for pagination
+
+**Example prompts:**
+- "Search for emails from john@example.com containing 'report'"
+- "Find all emails with attachments from last month"
+- "Search for unread emails about 'meeting'"
+
+**Gmail Search Syntax Examples:**
+- `from:user@example.com` - Emails from specific sender
+- `subject:report` - Emails with "report" in subject
+- `has:attachment` - Emails with attachments
+- `is:unread` - Unread emails
+- `after:2024/01/01` - Emails after specific date
+- `label:work` - Emails with "work" label
+
+**Returns:** List of matching emails with full metadata.
+
+#### 3. Get Email (`getEmail`)
+
+Gets the full content of a specific email.
+
+**Parameters:**
+- `messageId` (required): The Gmail message ID
+- `format` (optional): Format - "full" (default), "metadata", "minimal", or "raw"
+
+**Example prompts:**
+- "Show me the full content of email abc123"
+- "Read email with ID xyz789"
+
+**Returns:** Complete email with body text, headers, and attachments info.
+
+#### 4. Archive Email (`archiveEmail`)
+
+Archives one or more emails (removes from Inbox). Supports batch operations up to 1000 emails.
+
+**Parameters:**
+- `messageIds` (required): Array of message IDs to archive
+
+**Example prompts:**
+- "Archive email abc123"
+- "Archive all emails from newsletters"
+
+**Returns:** Confirmation of archived emails.
+
+#### 5. Mark Email (`markEmail`)
+
+Marks emails as read/unread, starred/unstarred, or important. Supports batch operations up to 1000 emails.
+
+**Parameters:**
+- `messageIds` (required): Array of message IDs
+- `markAs` (required): "read", "unread", "starred", "unstarred", "important", or "not_important"
+
+**Example prompts:**
+- "Mark email abc123 as read"
+- "Star all emails from my boss"
+- "Mark all unread emails as read"
+
+**Returns:** Confirmation of marked emails.
+
+#### 6. Modify Email Labels (`modifyEmailLabels`)
+
+Adds or removes labels from emails. Supports batch operations up to 1000 emails.
+
+**Parameters:**
+- `messageIds` (required): Array of message IDs
+- `addLabelIds` (optional): Labels to add (e.g., ["STARRED", "IMPORTANT"])
+- `removeLabelIds` (optional): Labels to remove (e.g., ["UNREAD", "INBOX"])
+
+**Example prompts:**
+- "Add 'work' label to email abc123"
+- "Remove 'inbox' label from all newsletters"
+
+**Returns:** Confirmation of label changes.
+
+#### 7. List Labels (`listLabels`)
+
+Lists all Gmail labels (both system and custom).
+
+**Example prompts:**
+- "List my Gmail labels"
+- "Show me all my email labels"
+
+**Returns:** List of labels with IDs, names, types, and message counts.
+
+#### 8. Create Label (`createLabel`)
+
+Creates a new custom label.
+
+**Parameters:**
+- `name` (required): Name for the new label
+- `labelListVisibility` (optional): "labelShow", "labelShowIfUnread", or "labelHide"
+- `messageListVisibility` (optional): "show" or "hide"
+
+**Example prompts:**
+- "Create a label called 'Important Projects'"
+- "Create a new label named 'Follow-up'"
+
+**Returns:** Confirmation with new label ID.
+
+#### 9. Delete Label (`deleteLabel`)
+
+Deletes a custom label (doesn't delete emails, only the label).
+
+**Parameters:**
+- `labelId` (required): ID of the label to delete
+
+**Example prompts:**
+- "Delete the label 'Old Projects'"
+- "Remove the label with ID Label_123"
+
+**Returns:** Confirmation that label was deleted.
+
+### Gmail Usage Examples
+
+Here are practical examples of how to use Gmail integration with Claude:
+
+1. **Inbox management:**
+   ```
+   "Show me my unread emails"
+   "List all emails from this week"
+   "Archive all read emails from newsletters"
+   ```
+
+2. **Email search and filtering:**
+   ```
+   "Find emails from john@example.com about 'budget'"
+   "Search for unread emails with attachments"
+   "Show me all emails labeled 'urgent'"
+   ```
+
+3. **Bulk operations:**
+   ```
+   "Mark all emails from last month as read"
+   "Archive all emails with label 'newsletter'"
+   "Star all emails from my manager"
+   ```
+
+4. **Label organization:**
+   ```
+   "Create labels for 'Projects', 'Follow-up', and 'Archive'"
+   "Add 'work' label to all emails from @company.com"
+   "List all my custom labels"
+   ```
+
+5. **Email triage:**
+   ```
+   "Show me unread emails from the last 3 days and summarize them"
+   "Find important emails I haven't responded to"
+   "List all emails that need follow-up"
+   ```
+
+### Gmail Search Query Syntax
+
+Gmail supports powerful search operators:
+
+- **Sender/Recipient**: `from:`, `to:`, `cc:`, `bcc:`
+- **Subject**: `subject:"exact phrase"`
+- **Content**: `"exact phrase"`, `word1 OR word2`
+- **Date**: `after:2024/01/01`, `before:2024/12/31`, `older_than:7d`, `newer_than:2d`
+- **Status**: `is:read`, `is:unread`, `is:starred`, `is:important`
+- **Attachments**: `has:attachment`, `filename:pdf`
+- **Labels**: `label:work`, `label:inbox`
+- **Size**: `size:1000000` (bytes), `larger:10M`, `smaller:1M`
+
+### Batch Operations
+
+All email modification tools support batch operations:
+- Up to **1000 emails** can be modified in a single operation
+- More efficient than individual operations
+- Useful for bulk archiving, labeling, or marking emails
+
+### Privacy & Security
+
+**Important considerations:**
+- This server has full access to your Gmail inbox
+- Emails are only processed locally and sent to Claude when you explicitly request them
+- Be mindful when sharing email content or summaries
+- The `token.json` file contains access to your emails - protect it carefully
+- Consider the sensitivity of your email content before using this integration
 
 ---
 
