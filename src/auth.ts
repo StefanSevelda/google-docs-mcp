@@ -15,17 +15,19 @@ const TOKEN_PATH = path.join(projectRootDir, 'token.json');
 const CREDENTIALS_PATH = path.join(projectRootDir, 'credentials.json');
 // --- End of path calculation ---
 
-// SECURITY WARNING: These scopes grant broad access to Google Docs and Drive.
+// SECURITY WARNING: These scopes grant broad access to Google Docs, Drive, Gmail, and Calendar.
 // In production, consider using more restrictive scopes like:
 // - 'https://www.googleapis.com/auth/documents' for Docs access only
 // - 'https://www.googleapis.com/auth/drive.file' for Drive files created by this app only
 // - 'https://www.googleapis.com/auth/drive.readonly' for read-only Drive access
+// - 'https://www.googleapis.com/auth/gmail.readonly' for read-only Gmail access
 const SCOPES = [
   'https://www.googleapis.com/auth/documents',
   'https://www.googleapis.com/auth/drive', // Full Drive access for listing, searching, and document discovery
   'https://www.googleapis.com/auth/chat.spaces.readonly', // Read Google Chat spaces
   'https://www.googleapis.com/auth/chat.messages.readonly', // Read Google Chat messages
-  'https://www.googleapis.com/auth/calendar' // Full Calendar access for event management
+  'https://www.googleapis.com/auth/calendar', // Full Calendar access for event management
+  'https://www.googleapis.com/auth/gmail.modify' // Gmail access for reading, modifying labels, archiving
 ];
 
 async function loadSavedCredentialsIfExist(): Promise<OAuth2Client | null> {
